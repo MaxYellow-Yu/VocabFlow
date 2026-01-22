@@ -1,0 +1,5 @@
+{
+  "name": "VocabFlow",
+  "description": "A sophisticated vocabulary learning application based on the Ebbinghaus Forgetting Curve. Features list management, spaced repetition, and distinct learning modes (Memorize, Consolidate, Review) with detailed progress tracking.",
+  "requestFramePermissions": []
+}
