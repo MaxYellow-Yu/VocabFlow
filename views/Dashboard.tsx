@@ -1,4 +1,6 @@
 import React, { useState, useRef } from 'react';
+// @ts-ignore
+import { read, utils } from 'xlsx';
 import { WordList, LearningMode, Word } from '../types';
 import { Icon } from '../components/Icon';
 import { WordEditor } from '../components/WordEditor';
@@ -27,6 +29,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   // Settings Modal State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Excel Import State
+  const excelInputRef = useRef<HTMLInputElement>(null);
+  const [importTargetId, setImportTargetId] = useState<string | null>(null);
 
   // Delete Confirmation State
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ type: 'list' | 'word', listId: string, wordId?: string } | null>(null);
@@ -82,6 +88,76 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
         window.location.reload();
     }
   };
+
+  // --- Excel Import Logic ---
+  
+  const handleImportExcelClick = (listId: string) => {
+    setImportTargetId(listId);
+    if (excelInputRef.current) {
+      excelInputRef.current.value = ''; // Clear previous selection
+      excelInputRef.current.click();
+    }
+  };
+
+  const handleExcelFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !importTargetId) return;
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      // @ts-ignore
+      const wb = read(arrayBuffer);
+      const sheetName = wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      // Get raw data as array of arrays [ ['English', 'Phonetic', 'Chinese'], ... ]
+      // @ts-ignore
+      const data: any[][] = utils.sheet_to_json(sheet, { header: 1 });
+
+      const newWords: Word[] = [];
+      const now = Date.now();
+
+      // Iterate rows. Start from 0, check if it's a header. 
+      // If row[0] is 'English' or similar, we might skip it, but simplest is to just import everything that looks like a word.
+      data.forEach((row, index) => {
+        // Ensure row has at least an English word (column 0)
+        if (!row[0] || typeof row[0] !== 'string') return;
+        
+        // Simple heuristic to skip header row "English"
+        if (row[0].toLowerCase() === 'english' && index === 0) return;
+
+        const word: Word = {
+          id: `${now}-${index}-${Math.random().toString(36).substr(2, 5)}`, // Unique ID
+          english: String(row[0]).trim(),
+          phonetic: row[1] ? String(row[1]).trim() : '',
+          chinese: row[2] ? String(row[2]).trim() : '', // Merged meaning/pos
+          masteredDates: [],
+          incorrectCount: 0
+        };
+        newWords.push(word);
+      });
+
+      if (newWords.length > 0) {
+        const updatedLists = lists.map(list => {
+          if (list.id === importTargetId) {
+            return {
+              ...list,
+              words: [...list.words, ...newWords]
+            };
+          }
+          return list;
+        });
+        onUpdateLists(updatedLists);
+        // Clean up
+        setImportTargetId(null);
+        // Optional: Provide visual feedback without standard alert
+        console.log(`Imported ${newWords.length} words.`);
+      }
+    } catch (error) {
+      console.error("Error parsing Excel file:", error);
+      alert("Failed to parse Excel file. Please ensure it has 3 columns: English, Phonetic, Meaning.");
+    }
+  };
+
 
   // --- List Management ---
 
@@ -283,13 +359,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                 <div className="border-t border-gray-100 bg-gray-50 p-4">
                    <div className="flex justify-between items-center mb-4 px-2">
                       <h3 className="font-semibold text-gray-600">Word List ({total})</h3>
-                      <button onClick={() => handleAddWordClick(list.id)} className="text-sm text-indigo-600 font-medium hover:underline">
-                        + Add Word
-                      </button>
+                      <div className="flex gap-3">
+                         <button 
+                            onClick={() => handleImportExcelClick(list.id)}
+                            className="flex items-center gap-1 text-sm text-gray-500 font-medium hover:text-emerald-600 hover:bg-emerald-50 px-2 py-1 rounded transition-colors"
+                            title="Import Excel file (Column 1: English, 2: Phonetic, 3: Definition)"
+                         >
+                            <Icon name="post_add" className="text-lg" />
+                            Import Excel
+                         </button>
+                         <button onClick={() => handleAddWordClick(list.id)} className="flex items-center gap-1 text-sm text-indigo-600 font-medium hover:bg-indigo-50 px-2 py-1 rounded transition-colors">
+                            <Icon name="add" className="text-lg" />
+                            Add Word
+                         </button>
+                      </div>
                    </div>
                    <div className="space-y-2">
                       {list.words.length === 0 ? (
-                        <div className="text-center text-gray-400 py-4 text-sm">No words yet. Add some!</div>
+                        <div className="text-center text-gray-400 py-4 text-sm">
+                            No words yet.<br/>
+                            Add words manually or import an Excel file.
+                        </div>
                       ) : (
                         list.words.map(word => (
                           <div key={word.id} className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group">
@@ -318,6 +408,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           );
         })}
       </div>
+
+      {/* Hidden Excel Input */}
+      <input 
+        type="file" 
+        ref={excelInputRef}
+        className="hidden" 
+        accept=".xlsx, .xls"
+        onChange={handleExcelFileChange}
+      />
 
       {/* Word Editor Modal */}
       <Modal 

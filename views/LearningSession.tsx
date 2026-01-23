@@ -176,11 +176,10 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, mode, on
            )}
         </div>
 
-        {/* Phonetic / POS - Show if En->Zh OR if Answer Revealed */}
+        {/* Phonetic - Show if En->Zh OR if Answer Revealed */}
         {(isEnToZh || !isQuestion) && (
            <div className="flex items-center gap-3 text-gray-500 text-lg">
              <span className="font-mono bg-gray-100 px-2 py-1 rounded">{currentWord.phonetic}</span>
-             <span className="italic font-serif text-indigo-600 font-medium">{currentWord.partOfSpeech}</span>
            </div>
         )}
 

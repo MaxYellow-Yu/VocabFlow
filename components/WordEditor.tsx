@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Word } from '../types';
+import { Icon } from './Icon';
 
 interface WordEditorProps {
   initialWord?: Word;
@@ -10,21 +11,102 @@ interface WordEditorProps {
 export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onCancel }) => {
   const [english, setEnglish] = useState('');
   const [phonetic, setPhonetic] = useState('');
-  const [partOfSpeech, setPartOfSpeech] = useState('');
   const [chinese, setChinese] = useState('');
+  const [isAutoFilling, setIsAutoFilling] = useState(false);
 
   useEffect(() => {
     if (initialWord) {
       setEnglish(initialWord.english);
       setPhonetic(initialWord.phonetic);
-      setPartOfSpeech(initialWord.partOfSpeech);
       setChinese(initialWord.chinese);
     }
   }, [initialWord]);
 
+  const handleAutoFill = async () => {
+    if (!english.trim()) return;
+    
+    setIsAutoFilling(true);
+    try {
+      // 1. Initialize SQL.js
+      // @ts-ignore
+      if (!window.initSqlJs) {
+        throw new Error("SQL.js not loaded");
+      }
+      // @ts-ignore
+      const SQL = await window.initSqlJs({
+        // Point to the WASM file on the CDN to ensure it loads correctly without bundler config
+        locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+      });
+
+      // 2. Fetch the database file
+      // NOTE: 'lookup.db' should be in the 'public' folder of your project
+      const response = await fetch('/lookup.db');
+      if (!response.ok) {
+        throw new Error('Could not find lookup.db. Please ensure it is in the public folder.');
+      }
+      const arrayBuffer = await response.arrayBuffer();
+
+      // 3. Load Database
+      const db = new SQL.Database(new Uint8Array(arrayBuffer));
+
+      // 4. Find valid dictionary tables (starting with "dict")
+      const tablesQuery = "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'dict%'";
+      const tablesResult = db.exec(tablesQuery);
+
+      let found = false;
+      const targetWord = english.trim().toLowerCase();
+      // Sanitize input for SQL query (basic prevention for single quotes)
+      const safeWord = targetWord.replace(/'/g, "''");
+
+      if (tablesResult.length > 0 && tablesResult[0].values) {
+        const tables = tablesResult[0].values.flat();
+        
+        // 5. Iterate tables to find the word
+        for (const tableName of tables) {
+          // Query: word, accent (phonetic), mean_cn (definition)
+          // We check for case-insensitive match
+          const query = `SELECT word, accent, mean_cn FROM ${tableName} WHERE LOWER(word) = '${safeWord}' LIMIT 1`;
+          try {
+            const res = db.exec(query);
+            if (res.length > 0 && res[0].values.length > 0) {
+              const row = res[0].values[0];
+              // row indexes: 0=word, 1=accent, 2=mean_cn
+              const dbPhonetic = row[1] ? String(row[1]) : '';
+              const dbChinese = row[2] ? String(row[2]) : '';
+
+              if (dbChinese) {
+                setChinese(dbChinese);
+                // Only set phonetic if it exists (it might be empty for phrases)
+                setPhonetic(dbPhonetic); 
+                found = true;
+                break; // Stop searching once found
+              }
+            }
+          } catch (err) {
+            console.warn(`Error querying table ${tableName}`, err);
+          }
+        }
+      }
+
+      if (!found) {
+        alert(`Word "${english}" not found in the offline dictionary.`);
+      }
+
+      // Free memory
+      db.close();
+
+    } catch (error) {
+      console.error("Auto-fill error:", error);
+      // @ts-ignore
+      alert(`Auto-fill failed: ${error.message}`);
+    } finally {
+      setIsAutoFilling(false);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({ english, phonetic, partOfSpeech, chinese });
+    onSave({ english, phonetic, chinese });
   };
 
   const inputClass = "w-full px-4 py-2 mt-1 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all";
@@ -33,16 +115,34 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
   return (
     <form onSubmit={handleSubmit}>
       <label className={labelClass}>English</label>
-      <input required value={english} onChange={e => setEnglish(e.target.value)} className={inputClass} placeholder="e.g. Ephemeral" />
+      <div className="relative mt-1">
+        <input 
+          required 
+          value={english} 
+          onChange={e => setEnglish(e.target.value)} 
+          className={`${inputClass} mt-0 pr-12`} 
+          placeholder="e.g. Ephemeral" 
+        />
+        <button
+          type="button"
+          onClick={handleAutoFill}
+          disabled={isAutoFilling || !english.trim()}
+          className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md transition-colors ${
+            isAutoFilling || !english.trim() 
+              ? 'text-gray-300 cursor-not-allowed' 
+              : 'text-indigo-600 hover:bg-indigo-50'
+          }`}
+          title="Auto-fill from lookup.db" 
+        >
+          <Icon name={isAutoFilling ? "hourglass_empty" : "auto_fix_high"} className={isAutoFilling ? "animate-spin text-lg" : "text-xl"} />
+        </button>
+      </div>
 
       <label className={labelClass}>Phonetic</label>
-      <input value={phonetic} onChange={e => setPhonetic(e.target.value)} className={inputClass} placeholder="e.g. /əˈfem.ər.əl/" />
+      <input value={phonetic} onChange={e => setPhonetic(e.target.value)} className={inputClass} placeholder="e.g. /əˈfem.ər.əl/ (Empty for phrases)" />
 
-      <label className={labelClass}>Part of Speech</label>
-      <input value={partOfSpeech} onChange={e => setPartOfSpeech(e.target.value)} className={inputClass} placeholder="e.g. adj." />
-
-      <label className={labelClass}>Chinese Definition</label>
-      <input required value={chinese} onChange={e => setChinese(e.target.value)} className={inputClass} placeholder="e.g. 短暂的" />
+      <label className={labelClass}>Definition & Part of Speech</label>
+      <input required value={chinese} onChange={e => setChinese(e.target.value)} className={inputClass} placeholder="e.g. adj. 短暂的；转瞬即逝的" />
 
       <div className="flex justify-end gap-3 mt-8">
         <button type="button" onClick={onCancel} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors font-medium">

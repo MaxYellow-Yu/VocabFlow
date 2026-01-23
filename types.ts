@@ -2,7 +2,7 @@ export interface Word {
   id: string;
   english: string;
   phonetic: string;
-  partOfSpeech: string;
+  // partOfSpeech merged into chinese
   chinese: string;
   masteredDates: number[]; // Array of timestamps
   incorrectCount: number;
