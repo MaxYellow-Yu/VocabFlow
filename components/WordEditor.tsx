@@ -39,8 +39,9 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
       });
 
       // 2. Fetch the database file
-      // NOTE: 'lookup.db' should be in the 'public' folder of your project
-      const response = await fetch('/lookup.db');
+      // NOTE: We use './lookup.db' (relative) instead of '/lookup.db' (absolute)
+      // to ensure it works when deployed to GitHub Pages subdirectories.
+      const response = await fetch('./lookup.db');
       if (!response.ok) {
         throw new Error('Could not find lookup.db. Please ensure it is in the public folder.');
       }
