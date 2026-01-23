@@ -34,16 +34,22 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
       }
       // @ts-ignore
       const SQL = await window.initSqlJs({
-        // Point to the WASM file on the CDN to ensure it loads correctly without bundler config
+        // Point to the WASM file on the CDN
         locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
       });
 
       // 2. Fetch the database file
-      // NOTE: We use './lookup.db' (relative) instead of '/lookup.db' (absolute)
-      // to ensure it works when deployed to GitHub Pages subdirectories.
-      const response = await fetch('./lookup.db');
+      // Robustly construct the path using Vite's BASE_URL to handle GitHub Pages subdirectories correctly
+      const baseUrl = import.meta.env.BASE_URL;
+      // Remove trailing slash if present to avoid double slashes, then append filename
+      const cleanBase = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+      const dbUrl = `${cleanBase}lookup.db`;
+      
+      console.log(`Attempting to fetch dictionary from: ${dbUrl}`);
+
+      const response = await fetch(dbUrl);
       if (!response.ok) {
-        throw new Error('Could not find lookup.db. Please ensure it is in the public folder.');
+        throw new Error(`Could not find lookup.db at ${dbUrl} (Status: ${response.status}). Please check if the file is in 'public/' and NOT ignored by .gitignore.`);
       }
       const arrayBuffer = await response.arrayBuffer();
 
@@ -56,31 +62,26 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
 
       let found = false;
       const targetWord = english.trim().toLowerCase();
-      // Sanitize input for SQL query (basic prevention for single quotes)
       const safeWord = targetWord.replace(/'/g, "''");
 
       if (tablesResult.length > 0 && tablesResult[0].values) {
         const tables = tablesResult[0].values.flat();
         
-        // 5. Iterate tables to find the word
+        // 5. Iterate tables
         for (const tableName of tables) {
-          // Query: word, accent (phonetic), mean_cn (definition)
-          // We check for case-insensitive match
           const query = `SELECT word, accent, mean_cn FROM ${tableName} WHERE LOWER(word) = '${safeWord}' LIMIT 1`;
           try {
             const res = db.exec(query);
             if (res.length > 0 && res[0].values.length > 0) {
               const row = res[0].values[0];
-              // row indexes: 0=word, 1=accent, 2=mean_cn
               const dbPhonetic = row[1] ? String(row[1]) : '';
               const dbChinese = row[2] ? String(row[2]) : '';
 
               if (dbChinese) {
                 setChinese(dbChinese);
-                // Only set phonetic if it exists (it might be empty for phrases)
                 setPhonetic(dbPhonetic); 
                 found = true;
-                break; // Stop searching once found
+                break;
               }
             }
           } catch (err) {
@@ -93,7 +94,6 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
         alert(`Word "${english}" not found in the offline dictionary.`);
       }
 
-      // Free memory
       db.close();
 
     } catch (error) {
