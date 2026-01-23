@@ -13,6 +13,7 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
   const [phonetic, setPhonetic] = useState('');
   const [chinese, setChinese] = useState('');
   const [isAutoFilling, setIsAutoFilling] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<{ type: 'error' | 'success', text: string } | null>(null);
 
   useEffect(() => {
     if (initialWord) {
@@ -22,10 +23,16 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
     }
   }, [initialWord]);
 
+  // Clear status when user types
+  useEffect(() => {
+    if (statusMsg) setStatusMsg(null);
+  }, [english, phonetic, chinese]);
+
   const handleAutoFill = async () => {
     if (!english.trim()) return;
     
     setIsAutoFilling(true);
+    setStatusMsg(null);
     try {
       // 1. Initialize SQL.js
       // @ts-ignore
@@ -49,7 +56,7 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
 
       const response = await fetch(dbUrl);
       if (!response.ok) {
-        throw new Error(`Could not find lookup.db at ${dbUrl} (Status: ${response.status}). Please check if the file is in 'public/' and NOT ignored by .gitignore.`);
+        throw new Error(`Could not find lookup.db. Please check if the file is in 'public/'.`);
       }
       const arrayBuffer = await response.arrayBuffer();
 
@@ -91,15 +98,16 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
       }
 
       if (!found) {
-        alert(`Word "${english}" not found in the offline dictionary.`);
+        setStatusMsg({ type: 'error', text: `Word "${english}" not found in offline dictionary.` });
+      } else {
+        setStatusMsg({ type: 'success', text: 'Auto-fill successful!' });
       }
 
       db.close();
 
-    } catch (error) {
+    } catch (error: any) {
       console.error("Auto-fill error:", error);
-      // @ts-ignore
-      alert(`Auto-fill failed: ${error.message}`);
+      setStatusMsg({ type: 'error', text: `Auto-fill failed: ${error.message || 'Unknown error'}` });
     } finally {
       setIsAutoFilling(false);
     }
@@ -144,6 +152,15 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
 
       <label className={labelClass}>Definition & Part of Speech</label>
       <input required value={chinese} onChange={e => setChinese(e.target.value)} className={inputClass} placeholder="e.g. adj. 短暂的；转瞬即逝的" />
+
+      {statusMsg && (
+        <div className={`mt-4 p-3 rounded-lg text-sm flex items-center gap-2 ${
+          statusMsg.type === 'error' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'
+        }`}>
+          <Icon name={statusMsg.type === 'error' ? 'error_outline' : 'check_circle'} className="text-lg" />
+          {statusMsg.text}
+        </div>
+      )}
 
       <div className="flex justify-end gap-3 mt-8">
         <button type="button" onClick={onCancel} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors font-medium">
