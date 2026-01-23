@@ -46,17 +46,19 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
       });
 
       // 2. Fetch the database file
-      // Robustly construct the path using Vite's BASE_URL to handle GitHub Pages subdirectories correctly
-      const baseUrl = import.meta.env.BASE_URL;
-      // Remove trailing slash if present to avoid double slashes, then append filename
-      const cleanBase = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
-      const dbUrl = `${cleanBase}lookup.db`;
+      // Robustly construct the path. 
+      // If deployed at https://user.github.io/repo/, and base is './', 
+      // fetch('lookup.db') works relative to index.html.
+      const dbFilename = 'lookup.db';
       
-      console.log(`Attempting to fetch dictionary from: ${dbUrl}`);
+      // Calculate the absolute URL for debugging purposes
+      const resolvedUrl = new URL(dbFilename, window.location.href).href;
+      console.log(`Attempting to fetch dictionary from: ${resolvedUrl}`);
 
-      const response = await fetch(dbUrl);
+      const response = await fetch(dbFilename);
+      
       if (!response.ok) {
-        throw new Error(`Could not find lookup.db. Please check if the file is in 'public/'.`);
+        throw new Error(`HTTP ${response.status}: Could not find file at ${resolvedUrl}`);
       }
       const arrayBuffer = await response.arrayBuffer();
 
@@ -154,11 +156,11 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
       <input required value={chinese} onChange={e => setChinese(e.target.value)} className={inputClass} placeholder="e.g. adj. 短暂的；转瞬即逝的" />
 
       {statusMsg && (
-        <div className={`mt-4 p-3 rounded-lg text-sm flex items-center gap-2 ${
+        <div className={`mt-4 p-3 rounded-lg text-sm flex items-center gap-2 break-all ${
           statusMsg.type === 'error' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'
         }`}>
-          <Icon name={statusMsg.type === 'error' ? 'error_outline' : 'check_circle'} className="text-lg" />
-          {statusMsg.text}
+          <Icon name={statusMsg.type === 'error' ? 'error_outline' : 'check_circle'} className="text-lg flex-shrink-0" />
+          <span>{statusMsg.text}</span>
         </div>
       )}
 
