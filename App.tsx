@@ -37,9 +37,11 @@ const App: React.FC = () => {
       return (
         <LearningSession 
           list={activeList} 
+          allLists={lists}
           mode={currentSession.mode} 
           onExit={endSession}
           onUpdateList={handleUpdateSingleList}
+          onUpdateGlobalLists={handleUpdateLists}
         />
       );
     }

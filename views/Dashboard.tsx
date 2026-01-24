@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 // @ts-ignore
 import { read, utils } from 'xlsx';
 import { WordList, LearningMode, Word } from '../types';
@@ -6,7 +6,7 @@ import { Icon } from '../components/Icon';
 import { WordEditor } from '../components/WordEditor';
 import { ListEditor } from '../components/ListEditor';
 import { Modal } from '../components/Modal';
-import { getRawDataJson, importRawDataJson, resetToDefaults } from '../services/storageService';
+import { getRawDataJson, importRawDataJson, resetToDefaults, getNextReviewTime } from '../services/storageService';
 
 interface DashboardProps {
   lists: WordList[];
@@ -14,13 +14,29 @@ interface DashboardProps {
   onUpdateLists: (lists: WordList[]) => void;
 }
 
+type TabType = 'new' | 'queue' | 'mastered';
+
 export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, onUpdateLists }) => {
   const [expandedListId, setExpandedListId] = useState<string | null>(lists[0]?.id || null);
+  const [activeTab, setActiveTab] = useState<TabType>('new');
   
+  // Sorting preference for Mastered list
+  const [masteredSortBy, setMasteredSortBy] = useState<'time' | 'count'>('time');
+
+  // Drag and Drop Refs
+  const dragItem = useRef<number | null>(null);
+  const dragOverItem = useRef<number | null>(null);
+
   // Word Modal State
   const [isWordModalOpen, setIsWordModalOpen] = useState(false);
   const [editingWord, setEditingWord] = useState<Word | undefined>(undefined);
   const [targetListId, setTargetListId] = useState<string | null>(null);
+
+  // Copy Word State
+  const [copyingWordData, setCopyingWordData] = useState<{ word: Word, sourceListId: string } | null>(null);
+  const [isCopyModalOpen, setIsCopyModalOpen] = useState(false);
+  const [isCopyCreateListModalOpen, setIsCopyCreateListModalOpen] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
   // List Modal State
   const [isListModalOpen, setIsListModalOpen] = useState(false);
@@ -29,6 +45,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   // Settings Modal State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importListInputRef = useRef<HTMLInputElement>(null);
 
   // Excel Import State
   const excelInputRef = useRef<HTMLInputElement>(null);
@@ -38,7 +55,69 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ type: 'list' | 'word', listId: string, wordId?: string } | null>(null);
 
   const toggleExpand = (id: string) => {
-    setExpandedListId(prev => prev === id ? null : id);
+    if (expandedListId === id) {
+      setExpandedListId(null);
+    } else {
+      setExpandedListId(id);
+      setActiveTab('new'); // Reset tab when opening a new list
+    }
+  };
+
+  // --- Drag and Drop Logic ---
+
+  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, position: number) => {
+    dragItem.current = position;
+    // Set opacity or effect if needed, usually browser handles ghost image
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>, position: number) => {
+    e.preventDefault();
+    dragOverItem.current = position;
+
+    // Live reordering logic
+    if (dragItem.current !== null && dragItem.current !== position) {
+      const newList = [...lists];
+      const draggedItemContent = newList[dragItem.current];
+      
+      // Remove from old pos
+      newList.splice(dragItem.current, 1);
+      // Insert at new pos
+      newList.splice(position, 0, draggedItemContent);
+      
+      // Update ref to track the item's new position
+      dragItem.current = position;
+      
+      // Update state
+      onUpdateLists(newList);
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+    dragItem.current = null;
+    dragOverItem.current = null;
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    // Necessary to allow dropping
+    e.preventDefault();
+  };
+
+  // --- Helpers for Display ---
+
+  const formatTimeUntil = (timestamp: number) => {
+    const diff = timestamp - Date.now();
+    if (diff <= 0) return "Due now";
+    
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    
+    if (days > 1) return `${days} Days`;
+    if (days === 1) return `1 Day`;
+    if (hours > 0) return `${hours} Hours`;
+    return "< 1 Hour";
   };
 
   // --- Data Management ---
@@ -78,8 +157,59 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
       }
     };
     reader.readAsText(file);
-    // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleExportSingleList = (list: WordList) => {
+    const jsonString = JSON.stringify(list, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = list.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const date = new Date().toISOString().split('T')[0];
+    a.download = `vocabflow_list_${safeName}_${date}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportListClick = () => {
+    importListInputRef.current?.click();
+  };
+
+  const handleImportListFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        try {
+            const content = event.target?.result as string;
+            const parsed = JSON.parse(content);
+
+            // Basic Validation
+            if (!parsed.name || !Array.isArray(parsed.words)) {
+                throw new Error("Invalid list format");
+            }
+
+            // Create new list with unique ID
+            const newList: WordList = {
+                ...parsed,
+                id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+                consolidationQueueIds: Array.isArray(parsed.consolidationQueueIds) ? parsed.consolidationQueueIds : []
+            };
+
+            onUpdateLists([...lists, newList]);
+            alert(`List "${newList.name}" imported successfully!`);
+        } catch (error) {
+            console.error("Import error:", error);
+            alert("Failed to import list. Please ensure the file is a valid JSON list export.");
+        }
+    };
+    reader.readAsText(file);
+    if (importListInputRef.current) importListInputRef.current.value = '';
   };
 
   const handleResetData = () => {
@@ -109,27 +239,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
       const wb = read(arrayBuffer);
       const sheetName = wb.SheetNames[0];
       const sheet = wb.Sheets[sheetName];
-      // Get raw data as array of arrays [ ['English', 'Phonetic', 'Chinese'], ... ]
       // @ts-ignore
       const data: any[][] = utils.sheet_to_json(sheet, { header: 1 });
 
       const newWords: Word[] = [];
       const now = Date.now();
 
-      // Iterate rows. Start from 0, check if it's a header. 
-      // If row[0] is 'English' or similar, we might skip it, but simplest is to just import everything that looks like a word.
       data.forEach((row, index) => {
-        // Ensure row has at least an English word (column 0)
         if (!row[0] || typeof row[0] !== 'string') return;
-        
-        // Simple heuristic to skip header row "English"
         if (row[0].toLowerCase() === 'english' && index === 0) return;
 
         const word: Word = {
-          id: `${now}-${index}-${Math.random().toString(36).substr(2, 5)}`, // Unique ID
+          id: `${now}-${index}-${Math.random().toString(36).substr(2, 5)}`,
           english: String(row[0]).trim(),
           phonetic: row[1] ? String(row[1]).trim() : '',
-          chinese: row[2] ? String(row[2]).trim() : '', // Merged meaning/pos
+          chinese: row[2] ? String(row[2]).trim() : '',
           masteredDates: [],
           incorrectCount: 0
         };
@@ -147,10 +271,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           return list;
         });
         onUpdateLists(updatedLists);
-        // Clean up
         setImportTargetId(null);
-        // Optional: Provide visual feedback without standard alert
-        console.log(`Imported ${newWords.length} words.`);
       }
     } catch (error) {
       console.error("Error parsing Excel file:", error);
@@ -174,13 +295,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
 
   const saveList = (name: string, description: string) => {
     if (editingList) {
-      // Edit existing
       const updatedLists = lists.map(l => 
         l.id === editingList.id ? { ...l, name, description } : l
       );
       onUpdateLists(updatedLists);
     } else {
-      // Create new
       const newList: WordList = {
         id: Date.now().toString(),
         name,
@@ -197,6 +316,69 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     e.stopPropagation();
     setDeleteConfirmation({ type: 'list', listId: id });
   };
+
+  // --- Copy Word Logic ---
+
+  const handleCopyInit = (word: Word, sourceListId: string) => {
+    setCopyingWordData({ word, sourceListId });
+    setIsCopyModalOpen(true);
+  };
+
+  const handleCopyWordToList = (targetListId: string) => {
+    if (!copyingWordData) return;
+
+    const newWord: Word = {
+      ...copyingWordData.word,
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+      masteredDates: [],
+      incorrectCount: 0
+    };
+
+    const updatedLists = lists.map(l => {
+      if (l.id === targetListId) {
+        return {
+          ...l,
+          words: [...l.words, newWord]
+        };
+      }
+      return l;
+    });
+
+    onUpdateLists(updatedLists);
+    
+    setCopyFeedback(`Copied to list!`);
+    setTimeout(() => {
+      setCopyFeedback(null);
+      setIsCopyModalOpen(false);
+      setCopyingWordData(null);
+    }, 1000);
+  };
+
+  const handleCreateListAndCopy = (name: string, description: string) => {
+    if (!copyingWordData) return;
+
+    const newWord: Word = {
+      ...copyingWordData.word,
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+      masteredDates: [],
+      incorrectCount: 0
+    };
+
+    const newList: WordList = {
+      id: Date.now().toString(),
+      name,
+      description,
+      words: [newWord],
+      consolidationQueueIds: []
+    };
+
+    onUpdateLists([...lists, newList]);
+    setIsCopyCreateListModalOpen(false);
+    setIsCopyModalOpen(false);
+    setCopyingWordData(null);
+    alert(`List "${name}" created and word added!`);
+  };
+
 
   // --- Word Management ---
 
@@ -225,12 +407,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     const currentList = { ...newLists[listIndex] };
 
     if (editingWord) {
-      // Edit
       currentList.words = currentList.words.map(w => 
         w.id === editingWord.id ? { ...w, ...wordData } : w
       );
     } else {
-      // Add
       const newWord: Word = {
         id: Date.now().toString(),
         ...wordData,
@@ -264,6 +444,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     setDeleteConfirmation(null);
   };
 
+  const WordItem = ({ word, listId, subtitle }: { word: Word, listId: string, subtitle?: React.ReactNode }) => (
+    <div className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group hover:shadow-sm transition-shadow">
+      <div className="flex-1 min-w-0 mr-4">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="font-bold text-gray-800 truncate">{word.english}</span>
+            {word.phonetic && <span className="text-xs font-normal text-gray-400 font-mono truncate hidden sm:inline">{word.phonetic}</span>}
+          </div>
+          <div className="text-sm text-gray-500 truncate">{word.chinese}</div>
+          {subtitle}
+      </div>
+      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+          <button onClick={() => handleCopyInit(word, listId)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Copy to another list">
+            <Icon name="playlist_add" className="text-lg" />
+          </button>
+          <button onClick={() => handleEditWordClick(listId, word)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors">
+            <Icon name="edit" className="text-lg" />
+          </button>
+          <button onClick={() => handleDeleteWordClick(listId, word.id)} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors">
+            <Icon name="delete" className="text-lg" />
+          </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="p-4 max-w-4xl mx-auto pb-20">
       <header className="mb-8 mt-4 flex justify-between items-center">
@@ -290,23 +494,63 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
       </header>
 
       <div className="space-y-6">
-        {lists.map(list => {
+        {lists.map((list, index) => {
           const isExpanded = expandedListId === list.id;
           const total = list.words.length;
-          const mastered = list.words.filter(w => w.masteredDates.length > 0).length;
+          const masteredCount = list.words.filter(w => w.masteredDates.length > 0).length;
           const queueSize = list.consolidationQueueIds.length;
 
+          // --- Classification & Sorting Logic ---
+          
+          // 1. Unlearned: No mastery dates AND not in queue (fresh words)
+          const unlearnedWords = list.words.filter(w => w.masteredDates.length === 0 && !list.consolidationQueueIds.includes(w.id));
+          // Keep original order
+
+          // 2. Review Queue: ID is in queue list
+          const queueWords = list.words
+              .filter(w => list.consolidationQueueIds.includes(w.id))
+              .sort((a, b) => b.incorrectCount - a.incorrectCount); // Sort by incorrect count descending
+
+          // 3. Mastered: Has mastery dates AND not in queue
+          const masteredWords = list.words
+              .filter(w => w.masteredDates.length > 0 && !list.consolidationQueueIds.includes(w.id))
+              .sort((a, b) => {
+                  if (masteredSortBy === 'count') {
+                      return b.incorrectCount - a.incorrectCount;
+                  }
+                  // Default: Time (Soonest review first)
+                  return getNextReviewTime(a) - getNextReviewTime(b);
+              });
+
           return (
-            <div key={list.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all duration-300">
+            <div 
+              key={list.id} 
+              className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all duration-300 group/list"
+              draggable
+              onDragStart={(e) => handleDragStart(e, index)}
+              onDragEnter={(e) => handleDragEnter(e, index)}
+              onDragEnd={handleDragEnd}
+              onDragOver={handleDragOver}
+            >
               {/* List Header Card */}
               <div 
-                className="p-6 cursor-pointer hover:bg-gray-50/50 transition-colors"
+                className="p-6 cursor-pointer hover:bg-gray-50/50 transition-colors relative"
                 onClick={() => toggleExpand(list.id)}
               >
                 <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <h2 className="text-xl font-bold text-gray-800">{list.name}</h2>
-                    <p className="text-sm text-gray-400">{list.description}</p>
+                  <div className="flex items-start gap-3">
+                    {/* Drag Handle */}
+                    <div 
+                      className="text-gray-300 cursor-move hover:text-gray-500 transition-colors mt-1" 
+                      title="Drag to reorder"
+                      onClick={(e) => e.stopPropagation()} // Prevent expansion when clicking drag handle
+                    >
+                      <Icon name="drag_indicator" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-800">{list.name}</h2>
+                      <p className="text-sm text-gray-400">{list.description}</p>
+                    </div>
                   </div>
                   <div className="flex gap-2">
                      <button onClick={(e) => handleEditListClick(e, list)} className="text-gray-300 hover:text-indigo-600 p-2 rounded-full hover:bg-indigo-50 transition-colors">
@@ -323,7 +567,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                 <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden mb-4">
                   <div 
                     className="bg-emerald-500 h-full transition-all duration-500" 
-                    style={{ width: `${total > 0 ? (mastered / total) * 100 : 0}%` }} 
+                    style={{ width: `${total > 0 ? (masteredCount / total) * 100 : 0}%` }} 
                   />
                 </div>
 
@@ -354,52 +598,164 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                 </div>
               </div>
 
-              {/* Word List (Expanded) */}
+              {/* Expanded Detailed View */}
               {isExpanded && (
-                <div className="border-t border-gray-100 bg-gray-50 p-4">
-                   <div className="flex justify-between items-center mb-4 px-2">
-                      <h3 className="font-semibold text-gray-600">Word List ({total})</h3>
-                      <div className="flex gap-3">
-                         <button 
-                            onClick={() => handleImportExcelClick(list.id)}
-                            className="flex items-center gap-1 text-sm text-gray-500 font-medium hover:text-emerald-600 hover:bg-emerald-50 px-2 py-1 rounded transition-colors"
-                            title="Import Excel file (Column 1: English, 2: Phonetic, 3: Definition)"
-                         >
-                            <Icon name="post_add" className="text-lg" />
-                            Import Excel
-                         </button>
-                         <button onClick={() => handleAddWordClick(list.id)} className="flex items-center gap-1 text-sm text-indigo-600 font-medium hover:bg-indigo-50 px-2 py-1 rounded transition-colors">
-                            <Icon name="add" className="text-lg" />
-                            Add Word
-                         </button>
+                <div className="border-t border-gray-100 bg-gray-50 p-4 pb-8 min-h-[400px] cursor-default" onClick={e => e.stopPropagation()}>
+                   
+                   {/* ACTION BUTTONS MOVED ABOVE TABS */}
+                   <div className="flex justify-end gap-3 mb-4">
+                      <button 
+                        onClick={() => handleExportSingleList(list)}
+                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                        title="Export this list as JSON"
+                      >
+                        <Icon name="download" className="text-lg" />
+                        Export JSON
+                      </button>
+                      <button 
+                        onClick={() => handleImportExcelClick(list.id)}
+                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-emerald-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                      >
+                        <Icon name="post_add" className="text-lg" />
+                        Import Excel
+                      </button>
+                      <button onClick={() => handleAddWordClick(list.id)} className="flex items-center gap-1 text-sm text-white bg-gray-900 font-medium hover:bg-gray-800 px-3 py-2 rounded-lg shadow-md transition-all">
+                        <Icon name="add" className="text-lg" />
+                        Add Word
+                      </button>
+                   </div>
+
+                   {/* Tabs Header */}
+                   <div className="flex border-b border-gray-200 mb-6 overflow-x-auto no-scrollbar">
+                     <button 
+                       onClick={() => setActiveTab('new')}
+                       className={`flex items-center gap-2 px-6 py-3 border-b-2 font-medium transition-colors whitespace-nowrap ${activeTab === 'new' ? 'border-gray-800 text-gray-800' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+                     >
+                       <Icon name="fiber_new" />
+                       New Words <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full text-gray-500 ml-1">{unlearnedWords.length}</span>
+                     </button>
+                     <button 
+                       onClick={() => setActiveTab('queue')}
+                       className={`flex items-center gap-2 px-6 py-3 border-b-2 font-medium transition-colors whitespace-nowrap ${activeTab === 'queue' ? 'border-amber-500 text-amber-700' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+                     >
+                       <Icon name="loop" />
+                       Review Queue <span className="text-xs bg-amber-50 px-2 py-0.5 rounded-full text-amber-600 ml-1">{queueWords.length}</span>
+                     </button>
+                     <button 
+                       onClick={() => setActiveTab('mastered')}
+                       className={`flex items-center gap-2 px-6 py-3 border-b-2 font-medium transition-colors whitespace-nowrap ${activeTab === 'mastered' ? 'border-emerald-500 text-emerald-700' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+                     >
+                       <Icon name="verified" />
+                       Mastered <span className="text-xs bg-emerald-50 px-2 py-0.5 rounded-full text-emerald-600 ml-1">{masteredWords.length}</span>
+                     </button>
+                   </div>
+
+                   {/* Description - Context aware */}
+                   <div className="flex justify-between items-center mb-6">
+                      <div className="text-sm text-gray-500 hidden sm:block">
+                        {activeTab === 'new' && "Words waiting to be learned."}
+                        {activeTab === 'queue' && "Words you struggled with."}
+                        {activeTab === 'mastered' && "Words you have learned."}
                       </div>
                    </div>
-                   <div className="space-y-2">
-                      {list.words.length === 0 ? (
-                        <div className="text-center text-gray-400 py-4 text-sm">
-                            No words yet.<br/>
-                            Add words manually or import an Excel file.
-                        </div>
-                      ) : (
-                        list.words.map(word => (
-                          <div key={word.id} className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group">
-                            <div>
-                               <div className="font-bold text-gray-800">
-                                 {word.english} 
-                                 <span className="text-xs font-normal text-gray-400 ml-2">{word.phonetic}</span>
-                               </div>
-                               <div className="text-sm text-gray-500">{word.chinese}</div>
+
+                   {/* Tab Content */}
+                   <div className="space-y-2 animate-in fade-in duration-300">
+                      
+                      {/* TAB: NEW WORDS */}
+                      {activeTab === 'new' && (
+                        <>
+                          {unlearnedWords.length === 0 ? (
+                             <div className="text-center py-12 text-gray-400">
+                               <Icon name="check_circle" className="text-4xl mb-2 text-gray-200" />
+                               <p>No new words available.</p>
+                             </div>
+                          ) : (
+                             unlearnedWords.map(word => (
+                               <WordItem key={word.id} word={word} listId={list.id} />
+                             ))
+                          )}
+                        </>
+                      )}
+
+                      {/* TAB: REVIEW QUEUE */}
+                      {activeTab === 'queue' && (
+                        <>
+                          {queueWords.length === 0 ? (
+                             <div className="text-center py-12 text-gray-400">
+                               <Icon name="thumb_up" className="text-4xl mb-2 text-gray-200" />
+                               <p>Your review queue is empty!</p>
+                             </div>
+                          ) : (
+                             queueWords.map(word => (
+                               <WordItem 
+                                 key={word.id} 
+                                 word={word} 
+                                 listId={list.id}
+                                 subtitle={
+                                   <div className="flex gap-2 mt-1">
+                                      {word.incorrectCount > 0 && (
+                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red-50 text-red-700 border border-red-100">
+                                            {word.incorrectCount} Errors
+                                        </span>
+                                      )}
+                                   </div>
+                                 } 
+                               />
+                             ))
+                          )}
+                        </>
+                      )}
+
+                      {/* TAB: MASTERED */}
+                      {activeTab === 'mastered' && (
+                        <>
+                          {masteredWords.length > 0 && (
+                            <div className="flex justify-end mb-2">
+                                <button 
+                                   onClick={() => setMasteredSortBy(prev => prev === 'time' ? 'count' : 'time')}
+                                   className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors"
+                                >
+                                   <Icon name="sort" className="text-sm" />
+                                   Sort by: {masteredSortBy === 'time' ? 'Review Date' : 'Errors'}
+                                </button>
                             </div>
-                            <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                               <button onClick={() => handleEditWordClick(list.id, word)} className="p-1 text-gray-400 hover:text-indigo-600">
-                                 <Icon name="edit" className="text-lg" />
-                               </button>
-                               <button onClick={() => handleDeleteWordClick(list.id, word.id)} className="p-1 text-gray-400 hover:text-red-500">
-                                 <Icon name="delete" className="text-lg" />
-                               </button>
-                            </div>
-                          </div>
-                        ))
+                          )}
+
+                          {masteredWords.length === 0 ? (
+                             <div className="text-center py-12 text-gray-400">
+                               <Icon name="school" className="text-4xl mb-2 text-gray-200" />
+                               <p>No words mastered yet. Start learning!</p>
+                             </div>
+                          ) : (
+                             masteredWords.map(word => {
+                               const nextReview = getNextReviewTime(word);
+                               const timeLabel = formatTimeUntil(nextReview);
+                               const isDue = Date.now() >= nextReview;
+
+                               return (
+                                 <WordItem 
+                                   key={word.id} 
+                                   word={word} 
+                                   listId={list.id} 
+                                   subtitle={
+                                     <div className="flex flex-wrap gap-2 mt-1">
+                                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium border ${isDue ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+                                           <Icon name="schedule" className="text-[10px]" />
+                                           Next: {timeLabel}
+                                        </span>
+                                        {word.incorrectCount > 0 && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-100">
+                                              {word.incorrectCount} Errors
+                                          </span>
+                                        )}
+                                     </div>
+                                   }
+                                 />
+                               );
+                             })
+                          )}
+                        </>
                       )}
                    </div>
                 </div>
@@ -482,6 +838,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
            </div>
 
            <div className="pt-6 border-t border-gray-100">
+              <h3 className="text-lg font-medium text-gray-800 mb-2">List Management</h3>
+               <button 
+                 onClick={handleImportListClick}
+                 className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg font-medium hover:bg-gray-50 transition-colors w-full sm:w-auto justify-center"
+               >
+                  <Icon name="playlist_add" />
+                  Import List from JSON
+               </button>
+               <input 
+                    type="file" 
+                    ref={importListInputRef} 
+                    className="hidden" 
+                    accept=".json" 
+                    onChange={handleImportListFileChange}
+               />
+           </div>
+
+           <div className="pt-6 border-t border-gray-100">
               <h3 className="text-lg font-medium text-gray-800 mb-2">Danger Zone</h3>
               <button 
                  onClick={handleResetData}
@@ -492,6 +866,73 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
               </button>
            </div>
         </div>
+      </Modal>
+
+      {/* Copy to List Modal */}
+      <Modal
+        isOpen={isCopyModalOpen}
+        onClose={() => {
+           setIsCopyModalOpen(false);
+           setCopyingWordData(null);
+        }}
+        title="Add to List"
+      >
+        <div className="space-y-2">
+          <p className="text-sm text-gray-500 mb-4">
+             Select a list to copy <strong>"{copyingWordData?.word.english}"</strong> into. 
+             This will create a fresh copy with 0 errors and no mastery history.
+          </p>
+
+          <div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-1">
+             {lists.filter(l => l.id !== copyingWordData?.sourceListId).map(l => (
+                <button
+                   key={l.id}
+                   onClick={() => handleCopyWordToList(l.id)}
+                   className="flex items-center justify-between p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all text-left group"
+                >
+                   <div className="min-w-0">
+                      <div className="font-medium text-gray-800 group-hover:text-indigo-800 truncate">{l.name}</div>
+                      <div className="text-xs text-gray-400 truncate">{l.words.length} words</div>
+                   </div>
+                   <Icon name="add" className="text-gray-300 group-hover:text-indigo-500" />
+                </button>
+             ))}
+             {lists.filter(l => l.id !== copyingWordData?.sourceListId).length === 0 && (
+               <p className="text-center text-gray-400 py-2 text-sm">No other lists available.</p>
+             )}
+          </div>
+
+          <div className="pt-4 mt-2 border-t border-gray-100">
+             <button
+               onClick={() => setIsCopyCreateListModalOpen(true)}
+               className="w-full flex items-center justify-center gap-2 p-3 rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-colors font-medium"
+             >
+               <Icon name="add_circle" />
+               Create New List
+             </button>
+          </div>
+
+          {copyFeedback && (
+             <div className="absolute inset-0 flex items-center justify-center bg-white/90 z-10 animate-in fade-in">
+                <div className="flex flex-col items-center text-emerald-600">
+                   <Icon name="check_circle" className="text-4xl mb-1" />
+                   <span className="font-bold">{copyFeedback}</span>
+                </div>
+             </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Create List Modal (For Copying) */}
+      <Modal
+         isOpen={isCopyCreateListModalOpen}
+         onClose={() => setIsCopyCreateListModalOpen(false)}
+         title="Create New List"
+      >
+         <ListEditor 
+           onSave={handleCreateListAndCopy}
+           onCancel={() => setIsCopyCreateListModalOpen(false)}
+         />
       </Modal>
 
       {/* Delete Confirmation Modal */}

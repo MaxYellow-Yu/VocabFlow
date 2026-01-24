@@ -80,18 +80,20 @@ const INTERVALS = [
   15 * 24 * 60 * 60 * 1000, // 15 days
 ];
 
-export const isDueForReview = (word: Word): boolean => {
-  if (word.masteredDates.length === 0) return false;
+// Helper to get the exact timestamp when the next review is due
+export const getNextReviewTime = (word: Word): number => {
+  if (word.masteredDates.length === 0) return 0;
+  
+  const stage = word.masteredDates.length - 1;
+  // If mastered more times than intervals defined, default to 30 days
+  const interval = stage < INTERVALS.length ? INTERVALS[stage] : 30 * 24 * 60 * 60 * 1000;
   
   const lastMastered = word.masteredDates[word.masteredDates.length - 1];
-  const now = Date.now();
-  const timeSince = now - lastMastered;
+  return lastMastered + interval;
+};
 
-  // Simple logic: determine "stage" by number of times mastered.
-  // If mastered 1 time, use interval[0]. If 2 times, interval[1], etc.
-  // If mastered more times than intervals defined, default to 30 days.
-  const stage = word.masteredDates.length - 1;
-  const interval = stage < INTERVALS.length ? INTERVALS[stage] : 30 * 24 * 60 * 60 * 1000;
-
-  return timeSince >= interval;
+export const isDueForReview = (word: Word): boolean => {
+  if (word.masteredDates.length === 0) return false;
+  const nextReview = getNextReviewTime(word);
+  return Date.now() >= nextReview;
 };
