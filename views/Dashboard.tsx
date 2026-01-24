@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef } from 'react';
 // @ts-ignore
 import { read, utils } from 'xlsx';
 import { WordList, LearningMode, Word } from '../types';
@@ -95,7 +95,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     }
   };
 
-  const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragEnd = () => {
     dragItem.current = null;
     dragOverItem.current = null;
   };
