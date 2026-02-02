@@ -4,18 +4,23 @@ interface ActivityHeatmapProps {
   data: Record<string, number>; // "YYYY-MM-DD": count
 }
 
+interface DayData {
+  date: string;
+  count: number;
+}
+
 export const ActivityHeatmap: React.FC<ActivityHeatmapProps> = ({ data }) => {
   // Generate last 365 days
-  const calendarData = useMemo(() => {
+  const calendarData = useMemo<DayData[]>(() => {
     const today = new Date();
     // Adjust to Beijing time for consistency with storage if needed, 
     // but here we just need relative days ending today.
-    const days = [];
+    const days: DayData[] = [];
     // Go back 52 weeks * 7 days roughly
     for (let i = 364; i >= 0; i--) {
       const d = new Date();
       d.setDate(today.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
+      
       // We rely on the storage service effectively passing dates that match YYYY-MM-DD
       // Note: The storage uses Beijing time, here we use local browser time for day generation.
       // Ideally, we'd sync timezones, but for visual purposes, local date string usually suffices
@@ -51,8 +56,8 @@ export const ActivityHeatmap: React.FC<ActivityHeatmapProps> = ({ data }) => {
   };
 
   // Group by weeks for the grid
-  const weeks = [];
-  let currentWeek: typeof calendarData = [];
+  const weeks: DayData[][] = [];
+  let currentWeek: DayData[] = [];
   
   calendarData.forEach((day, index) => {
     currentWeek.push(day);
