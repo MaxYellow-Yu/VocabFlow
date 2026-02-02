@@ -5,8 +5,10 @@ import { WordList, LearningMode, Word } from '../types';
 import { Icon } from '../components/Icon';
 import { WordEditor } from '../components/WordEditor';
 import { ListEditor } from '../components/ListEditor';
+import { NoteEditor } from '../components/NoteEditor';
+import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { Modal } from '../components/Modal';
-import { getRawDataJson, importRawDataJson, resetToDefaults, getNextReviewTime } from '../services/storageService';
+import { getRawDataJson, importRawDataJson, resetToDefaults, getNextReviewTime, getDailyCount, getNotesJson, importNotesJson, getNote, saveNote, getListHistory } from '../services/storageService';
 
 interface DashboardProps {
   lists: WordList[];
@@ -16,12 +18,54 @@ interface DashboardProps {
 
 type TabType = 'new' | 'queue' | 'mastered';
 
+interface WordItemProps {
+  word: Word;
+  listId: string;
+  subtitle?: React.ReactNode;
+  onNote: (word: Word) => void;
+  onCopy: (word: Word, listId: string) => void;
+  onEdit: (listId: string, word: Word) => void;
+  onDelete: (listId: string, wordId: string) => void;
+}
+
+const WordItem: React.FC<WordItemProps> = ({ word, listId, subtitle, onNote, onCopy, onEdit, onDelete }) => (
+  <div className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group hover:shadow-sm transition-shadow">
+    <div className="flex-1 min-w-0 mr-4">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="font-bold text-gray-800 truncate">{word.english}</span>
+          {word.phonetic && <span className="text-xs font-normal text-gray-400 font-mono truncate hidden sm:inline">{word.phonetic}</span>}
+        </div>
+        <div className="text-sm text-gray-500 truncate">{word.chinese}</div>
+        {subtitle}
+    </div>
+    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <button onClick={() => onNote(word)} className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors" title="Edit Note">
+          <Icon name="edit_note" className="text-lg" />
+        </button>
+        <button onClick={() => onCopy(word, listId)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Copy to another list">
+          <Icon name="playlist_add" className="text-lg" />
+        </button>
+        <button onClick={() => onEdit(listId, word)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors">
+          <Icon name="edit" className="text-lg" />
+        </button>
+        <button onClick={() => onDelete(listId, word.id)} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors">
+          <Icon name="delete" className="text-lg" />
+        </button>
+    </div>
+  </div>
+);
+
 export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, onUpdateLists }) => {
   const [expandedListId, setExpandedListId] = useState<string | null>(lists[0]?.id || null);
   const [activeTab, setActiveTab] = useState<TabType>('new');
   
   // Sorting preference for Mastered list
   const [masteredSortBy, setMasteredSortBy] = useState<'time' | 'count'>('time');
+
+  // Search State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Drag and Drop Refs
   const dragItem = useRef<number | null>(null);
@@ -31,6 +75,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   const [isWordModalOpen, setIsWordModalOpen] = useState(false);
   const [editingWord, setEditingWord] = useState<Word | undefined>(undefined);
   const [targetListId, setTargetListId] = useState<string | null>(null);
+
+  // Note Modal State
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [noteTargetWord, setNoteTargetWord] = useState<Word | null>(null);
+  const [noteContent, setNoteContent] = useState('');
+
+  // History Modal State
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [historyTargetListId, setHistoryTargetListId] = useState<string | null>(null);
 
   // Copy Word State
   const [copyingWordData, setCopyingWordData] = useState<{ word: Word, sourceListId: string } | null>(null);
@@ -46,6 +99,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importListInputRef = useRef<HTMLInputElement>(null);
+  const notesFileInputRef = useRef<HTMLInputElement>(null);
 
   // Excel Import State
   const excelInputRef = useRef<HTMLInputElement>(null);
@@ -60,6 +114,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     } else {
       setExpandedListId(id);
       setActiveTab('new'); // Reset tab when opening a new list
+    }
+  };
+
+  const handleSearchToggle = () => {
+    if (isSearchOpen) {
+      // Closing search: clear query
+      setSearchQuery('');
+      setIsSearchOpen(false);
+    } else {
+      setIsSearchOpen(true);
+      setTimeout(() => searchInputRef.current?.focus(), 100);
     }
   };
 
@@ -160,6 +225,46 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // Notes Import/Export
+  const handleExportNotes = () => {
+    const jsonString = getNotesJson();
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const date = new Date().toISOString().split('T')[0];
+    a.download = `vocabflow_notes_${date}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportNotesClick = () => {
+    notesFileInputRef.current?.click();
+  };
+
+  const handleNotesFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      if (content) {
+        const success = importNotesJson(content);
+        if (success) {
+          alert('Notes imported successfully!');
+        } else {
+          alert('Failed to import notes. Invalid format.');
+        }
+      }
+    };
+    reader.readAsText(file);
+    if (notesFileInputRef.current) notesFileInputRef.current.value = '';
+  };
+
+
   const handleExportSingleList = (list: WordList) => {
     const jsonString = JSON.stringify(list, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
@@ -212,6 +317,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     if (importListInputRef.current) importListInputRef.current.value = '';
   };
 
+  // --- History Export Logic ---
+  const handleExportHistory = (listId: string) => {
+    const historyData = getListHistory(listId);
+    const jsonString = JSON.stringify(historyData, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const date = new Date().toISOString().split('T')[0];
+    a.download = `vocabflow_history_${listId}_${date}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleViewHistory = (listId: string) => {
+    setHistoryTargetListId(listId);
+    setIsHistoryModalOpen(true);
+  };
+
   const handleResetData = () => {
     if (confirm("Are you sure? This will delete all your custom data and restore the default demo data.")) {
         resetToDefaults();
@@ -261,17 +387,42 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
       });
 
       if (newWords.length > 0) {
-        const updatedLists = lists.map(list => {
-          if (list.id === importTargetId) {
-            return {
-              ...list,
-              words: [...list.words, ...newWords]
-            };
-          }
-          return list;
-        });
-        onUpdateLists(updatedLists);
-        setImportTargetId(null);
+        // Find the target list to check for duplicates
+        const targetList = lists.find(list => list.id === importTargetId);
+        
+        if (targetList) {
+            // Filter out words that already exist (exact match on english, phonetic, and chinese)
+            const uniqueNewWords = newWords.filter(newWord => {
+                return !targetList.words.some(existingWord => 
+                    existingWord.english === newWord.english && 
+                    existingWord.phonetic === newWord.phonetic && 
+                    existingWord.chinese === newWord.chinese
+                );
+            });
+
+            if (uniqueNewWords.length > 0) {
+                const updatedLists = lists.map(list => {
+                  if (list.id === importTargetId) {
+                    return {
+                      ...list,
+                      words: [...list.words, ...uniqueNewWords]
+                    };
+                  }
+                  return list;
+                });
+                onUpdateLists(updatedLists);
+            }
+            
+            const skippedCount = newWords.length - uniqueNewWords.length;
+            if (skippedCount > 0) {
+                alert(`Imported ${uniqueNewWords.length} words. (${skippedCount} duplicates skipped)`);
+            } else {
+                setImportTargetId(null); // Silent success if all added (UI updates)
+            }
+            
+        } else {
+             setImportTargetId(null);
+        }
       }
     } catch (error) {
       console.error("Error parsing Excel file:", error);
@@ -327,6 +478,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   const handleCopyWordToList = (targetListId: string) => {
     if (!copyingWordData) return;
 
+    // Check for duplicates in target list
+    const targetList = lists.find(l => l.id === targetListId);
+    if (targetList) {
+        const isDuplicate = targetList.words.some(w => 
+            w.english === copyingWordData.word.english && 
+            w.phonetic === copyingWordData.word.phonetic && 
+            w.chinese === copyingWordData.word.chinese
+        );
+
+        if (isDuplicate) {
+             setCopyFeedback("Already in list");
+             setTimeout(() => {
+                setCopyFeedback(null);
+             }, 1000);
+             return; // Do not copy
+        }
+    }
+
     const newWord: Word = {
       ...copyingWordData.word,
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
@@ -379,6 +548,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     alert(`List "${name}" created and word added!`);
   };
 
+  // --- Note Logic ---
+
+  const handleNoteInit = (word: Word) => {
+    setNoteTargetWord(word);
+    setNoteContent(getNote(word.english));
+    setIsNoteModalOpen(true);
+  };
+
+  const handleSaveNote = (content: string) => {
+    if (noteTargetWord) {
+      saveNote(noteTargetWord.english, content);
+    }
+    setIsNoteModalOpen(false);
+    setNoteTargetWord(null);
+  };
+
 
   // --- Word Management ---
 
@@ -411,6 +596,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
         w.id === editingWord.id ? { ...w, ...wordData } : w
       );
     } else {
+      // Check for exact duplicate before adding new word
+      const isDuplicate = currentList.words.some(w => 
+        w.english === wordData.english &&
+        w.phonetic === wordData.phonetic &&
+        w.chinese === wordData.chinese
+      );
+
+      if (isDuplicate) {
+          alert("This word already exists in the list (exact match for English, Phonetic, and Meaning).");
+          return;
+      }
+
       const newWord: Word = {
         id: Date.now().toString(),
         ...wordData,
@@ -444,38 +641,35 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     setDeleteConfirmation(null);
   };
 
-  const WordItem = ({ word, listId, subtitle }: { word: Word, listId: string, subtitle?: React.ReactNode }) => (
-    <div className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group hover:shadow-sm transition-shadow">
-      <div className="flex-1 min-w-0 mr-4">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-bold text-gray-800 truncate">{word.english}</span>
-            {word.phonetic && <span className="text-xs font-normal text-gray-400 font-mono truncate hidden sm:inline">{word.phonetic}</span>}
-          </div>
-          <div className="text-sm text-gray-500 truncate">{word.chinese}</div>
-          {subtitle}
-      </div>
-      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-          <button onClick={() => handleCopyInit(word, listId)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Copy to another list">
-            <Icon name="playlist_add" className="text-lg" />
-          </button>
-          <button onClick={() => handleEditWordClick(listId, word)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors">
-            <Icon name="edit" className="text-lg" />
-          </button>
-          <button onClick={() => handleDeleteWordClick(listId, word.id)} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors">
-            <Icon name="delete" className="text-lg" />
-          </button>
-      </div>
-    </div>
-  );
-
   return (
     <div className="p-4 max-w-4xl mx-auto pb-20">
-      <header className="mb-8 mt-4 flex justify-between items-center">
+      <header className="mb-8 mt-4 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">VocabFlow</h1>
           <p className="text-gray-500 mt-1">Spaced Repetition System</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center self-start sm:self-auto">
+          {/* Search Bar */}
+          <div className={`flex items-center bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden transition-all duration-300 ease-in-out ${isSearchOpen ? 'w-full sm:w-64' : 'w-10'}`}>
+             <button
+                onClick={handleSearchToggle}
+                className="flex items-center justify-center p-2 text-gray-500 hover:text-indigo-600 min-w-[40px]"
+                title={isSearchOpen ? "Close search" : "Search words"}
+             >
+                <Icon name={isSearchOpen ? "close" : "search"} />
+             </button>
+             {isSearchOpen && (
+               <input
+                 ref={searchInputRef}
+                 type="text"
+                 value={searchQuery}
+                 onChange={(e) => setSearchQuery(e.target.value)}
+                 placeholder="Search words..."
+                 className="w-full p-2 outline-none text-gray-700 text-sm bg-transparent"
+               />
+             )}
+          </div>
+
           <button 
              onClick={() => setIsSettingsOpen(true)}
              className="flex items-center justify-center p-2 rounded-lg bg-white border border-gray-200 text-gray-500 hover:text-indigo-600 hover:border-indigo-200 transition-colors shadow-sm"
@@ -485,34 +679,50 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           </button>
           <button 
             onClick={handleCreateListClick}
-            className="flex items-center gap-2 bg-gray-900 text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition-colors shadow-lg"
+            className="flex items-center gap-2 bg-gray-900 text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition-colors shadow-lg whitespace-nowrap"
           >
             <Icon name="add" className="text-lg" />
-            <span>New List</span>
+            <span className="hidden sm:inline">New List</span>
+            <span className="sm:hidden">New</span>
           </button>
         </div>
       </header>
 
       <div className="space-y-6">
         {lists.map((list, index) => {
-          const isExpanded = expandedListId === list.id;
-          const total = list.words.length;
-          const masteredCount = list.words.filter(w => w.masteredDates.length > 0).length;
-          const queueSize = list.consolidationQueueIds.length;
+          // --- Search Filtering ---
+          // Filter words based on search query (case insensitive)
+          const displayWords = searchQuery 
+            ? list.words.filter(w => 
+                w.english.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                w.chinese.includes(searchQuery)
+              )
+            : list.words;
 
-          // --- Classification & Sorting Logic ---
+          // If searching and list matches no words, hide the entire list
+          if (searchQuery && displayWords.length === 0) {
+            return null;
+          }
+
+          const isExpanded = expandedListId === list.id;
+          const total = displayWords.length;
+          const masteredCount = displayWords.filter(w => w.masteredDates.length > 0).length;
+          const queueSize = displayWords.filter(w => list.consolidationQueueIds.includes(w.id)).length;
+          const dailyCount = getDailyCount(list.id);
+
+          // --- Classification & Sorting Logic (Based on Filtered Words) ---
           
           // 1. Unlearned: No mastery dates AND not in queue (fresh words)
-          const unlearnedWords = list.words.filter(w => w.masteredDates.length === 0 && !list.consolidationQueueIds.includes(w.id));
+          const unlearnedWords = displayWords.filter(w => w.masteredDates.length === 0 && !list.consolidationQueueIds.includes(w.id));
           // Keep original order
 
           // 2. Review Queue: ID is in queue list
-          const queueWords = list.words
+          const queueWords = displayWords
               .filter(w => list.consolidationQueueIds.includes(w.id))
               .sort((a, b) => b.incorrectCount - a.incorrectCount); // Sort by incorrect count descending
 
           // 3. Mastered: Has mastery dates AND not in queue
-          const masteredWords = list.words
+          const masteredWords = displayWords
               .filter(w => w.masteredDates.length > 0 && !list.consolidationQueueIds.includes(w.id))
               .sort((a, b) => {
                   if (masteredSortBy === 'count') {
@@ -548,7 +758,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                       <Icon name="drag_indicator" />
                     </div>
                     <div>
-                      <h2 className="text-xl font-bold text-gray-800">{list.name}</h2>
+                      <h2 className="text-xl font-bold text-gray-800">
+                        {list.name}
+                        {searchQuery && <span className="ml-2 text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Found: {displayWords.length}</span>}
+                      </h2>
                       <p className="text-sm text-gray-400">{list.description}</p>
                     </div>
                   </div>
@@ -563,7 +776,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                   </div>
                 </div>
 
-                {/* Progress Bar */}
+                {/* Progress Bar (Shows stats for filtered results during search) */}
+                <div className="flex justify-end mb-1">
+                   <div className="flex items-center gap-1 text-xs font-medium text-gray-500">
+                      <Icon name="trending_up" className="text-sm" />
+                      Today: {dailyCount}
+                   </div>
+                </div>
                 <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden mb-4">
                   <div 
                     className="bg-emerald-500 h-full transition-all duration-500" 
@@ -604,6 +823,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                    
                    {/* ACTION BUTTONS MOVED ABOVE TABS */}
                    <div className="flex justify-end gap-3 mb-4">
+                      <button 
+                        onClick={() => handleViewHistory(list.id)}
+                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                        title="View learning history"
+                      >
+                        <Icon name="calendar_today" className="text-lg" />
+                        History
+                      </button>
                       <button 
                         onClick={() => handleExportSingleList(list)}
                         className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
@@ -653,9 +880,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                    {/* Description - Context aware */}
                    <div className="flex justify-between items-center mb-6">
                       <div className="text-sm text-gray-500 hidden sm:block">
-                        {activeTab === 'new' && "Words waiting to be learned."}
-                        {activeTab === 'queue' && "Words you struggled with."}
-                        {activeTab === 'mastered' && "Words you have learned."}
+                        {searchQuery ? `Showing results for "${searchQuery}"` : (
+                          <>
+                            {activeTab === 'new' && "Words waiting to be learned."}
+                            {activeTab === 'queue' && "Words you struggled with."}
+                            {activeTab === 'mastered' && "Words you have learned."}
+                          </>
+                        )}
                       </div>
                    </div>
 
@@ -667,12 +898,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                         <>
                           {unlearnedWords.length === 0 ? (
                              <div className="text-center py-12 text-gray-400">
-                               <Icon name="check_circle" className="text-4xl mb-2 text-gray-200" />
-                               <p>No new words available.</p>
+                               <Icon name={searchQuery ? "search_off" : "check_circle"} className="text-4xl mb-2 text-gray-200" />
+                               <p>{searchQuery ? "No matching new words." : "No new words available."}</p>
                              </div>
                           ) : (
                              unlearnedWords.map(word => (
-                               <WordItem key={word.id} word={word} listId={list.id} />
+                               <WordItem 
+                                 key={word.id} 
+                                 word={word} 
+                                 listId={list.id} 
+                                 onNote={handleNoteInit}
+                                 onCopy={handleCopyInit} 
+                                 onEdit={handleEditWordClick} 
+                                 onDelete={handleDeleteWordClick}
+                               />
                              ))
                           )}
                         </>
@@ -683,8 +922,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                         <>
                           {queueWords.length === 0 ? (
                              <div className="text-center py-12 text-gray-400">
-                               <Icon name="thumb_up" className="text-4xl mb-2 text-gray-200" />
-                               <p>Your review queue is empty!</p>
+                               <Icon name={searchQuery ? "search_off" : "thumb_up"} className="text-4xl mb-2 text-gray-200" />
+                               <p>{searchQuery ? "No matching words in queue." : "Your review queue is empty!"}</p>
                              </div>
                           ) : (
                              queueWords.map(word => (
@@ -700,7 +939,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                         </span>
                                       )}
                                    </div>
-                                 } 
+                                 }
+                                 onNote={handleNoteInit}
+                                 onCopy={handleCopyInit} 
+                                 onEdit={handleEditWordClick} 
+                                 onDelete={handleDeleteWordClick}
                                />
                              ))
                           )}
@@ -724,8 +967,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
 
                           {masteredWords.length === 0 ? (
                              <div className="text-center py-12 text-gray-400">
-                               <Icon name="school" className="text-4xl mb-2 text-gray-200" />
-                               <p>No words mastered yet. Start learning!</p>
+                               <Icon name={searchQuery ? "search_off" : "school"} className="text-4xl mb-2 text-gray-200" />
+                               <p>{searchQuery ? "No matching mastered words." : "No words mastered yet. Start learning!"}</p>
                              </div>
                           ) : (
                              masteredWords.map(word => {
@@ -751,6 +994,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                         )}
                                      </div>
                                    }
+                                   onNote={handleNoteInit}
+                                   onCopy={handleCopyInit} 
+                                   onEdit={handleEditWordClick} 
+                                   onDelete={handleDeleteWordClick}
                                  />
                                );
                              })
@@ -763,6 +1010,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
             </div>
           );
         })}
+        {/* Empty State for Search */}
+        {searchQuery && lists.every(list => list.words.every(w => 
+            !w.english.toLowerCase().includes(searchQuery.toLowerCase()) && 
+            !w.chinese.includes(searchQuery)
+        )) && (
+            <div className="text-center py-12 text-gray-400 animate-in fade-in">
+                <Icon name="search_off" className="text-6xl mb-4 text-gray-200" />
+                <h3 className="text-xl font-bold text-gray-600">No results found</h3>
+                <p className="text-gray-400 mt-2">No words match "{searchQuery}" in any of your lists.</p>
+                <button 
+                    onClick={() => { setSearchQuery(''); setIsSearchOpen(false); }}
+                    className="mt-6 px-4 py-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                    Clear Search
+                </button>
+            </div>
+        )}
       </div>
 
       {/* Hidden Excel Input */}
@@ -799,6 +1063,49 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           onCancel={() => setIsListModalOpen(false)} 
         />
       </Modal>
+      
+      {/* Note Modal */}
+      <Modal
+        isOpen={isNoteModalOpen}
+        onClose={() => setIsNoteModalOpen(false)}
+        title="Word Note"
+        maxWidth="max-w-4xl"
+      >
+        <div className="min-w-full md:min-w-[600px]">
+          <NoteEditor 
+            englishWord={noteTargetWord?.english || ''}
+            initialContent={noteContent}
+            onSave={handleSaveNote}
+            onCancel={() => setIsNoteModalOpen(false)}
+          />
+        </div>
+      </Modal>
+
+      {/* History Heatmap Modal */}
+      <Modal
+        isOpen={isHistoryModalOpen}
+        onClose={() => setIsHistoryModalOpen(false)}
+        title="Learning History"
+        maxWidth="max-w-6xl"
+      >
+        <div className="space-y-6">
+           <div className="bg-gray-50 rounded-xl p-6 border border-gray-100 flex justify-center overflow-x-auto">
+             {historyTargetListId && (
+                <ActivityHeatmap data={getListHistory(historyTargetListId)} />
+             )}
+           </div>
+           
+           <div className="flex justify-end pt-4 border-t border-gray-100">
+              <button 
+                 onClick={() => historyTargetListId && handleExportHistory(historyTargetListId)}
+                 className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg font-medium hover:bg-indigo-100 transition-colors"
+              >
+                 <Icon name="download" />
+                 Export History JSON
+              </button>
+           </div>
+        </div>
+      </Modal>
 
       {/* Settings Modal */}
       <Modal 
@@ -833,6 +1140,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                     className="hidden" 
                     accept=".json" 
                     onChange={handleFileChange}
+                 />
+              </div>
+           </div>
+
+           <div className="pt-6 border-t border-gray-100">
+              <h3 className="text-lg font-medium text-gray-800 mb-2">Notes Data</h3>
+              <p className="text-sm text-gray-500 mb-4">
+                 Import or export your notes independently from your word lists.
+              </p>
+              <div className="flex gap-3">
+                 <button 
+                   onClick={handleExportNotes}
+                   className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 rounded-lg font-medium hover:bg-amber-100 transition-colors"
+                 >
+                    <Icon name="description" />
+                    Export Notes
+                 </button>
+                 <button 
+                   onClick={handleImportNotesClick}
+                   className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg font-medium hover:bg-gray-50 transition-colors"
+                 >
+                    <Icon name="upload_file" />
+                    Import Notes
+                 </button>
+                 <input 
+                    type="file" 
+                    ref={notesFileInputRef} 
+                    className="hidden" 
+                    accept=".json" 
+                    onChange={handleNotesFileChange}
                  />
               </div>
            </div>
@@ -915,7 +1252,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           {copyFeedback && (
              <div className="absolute inset-0 flex items-center justify-center bg-white/90 z-10 animate-in fade-in">
                 <div className="flex flex-col items-center text-emerald-600">
-                   <Icon name="check_circle" className="text-4xl mb-1" />
+                   <Icon name={copyFeedback === 'Already in list' ? "error_outline" : "check_circle"} className="text-4xl mb-1" />
                    <span className="font-bold">{copyFeedback}</span>
                 </div>
              </div>

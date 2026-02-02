@@ -1,6 +1,8 @@
 import { WordList, Word } from '../types';
 
 const STORAGE_KEY = 'vocabflow_data';
+const HISTORY_KEY = 'vocabflow_history'; // Changed from DAILY_STATS_KEY
+const NOTES_KEY = 'vocabflow_notes';
 
 const DEFAULT_DATA: WordList[] = [
   {
@@ -69,6 +71,8 @@ export const importRawDataJson = (jsonString: string): boolean => {
 
 export const resetToDefaults = () => {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(HISTORY_KEY);
+    localStorage.removeItem(NOTES_KEY);
 }
 
 // Ebbinghaus Intervals in milliseconds (approximate for demo)
@@ -96,4 +100,115 @@ export const isDueForReview = (word: Word): boolean => {
   if (word.masteredDates.length === 0) return false;
   const nextReview = getNextReviewTime(word);
   return Date.now() >= nextReview;
+};
+
+// --- Daily History Logic (Beijing Time) ---
+
+// Structure: { [listId: string]: { [date: string]: number } }
+interface HistoryData {
+  [listId: string]: Record<string, number>;
+}
+
+// Helper to get Beijing Date String (YYYY-MM-DD)
+const getBeijingDateString = (): string => {
+  const now = new Date();
+  // Beijing is UTC+8
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const beijingTime = new Date(utc + (3600000 * 8));
+  
+  const year = beijingTime.getFullYear();
+  const month = String(beijingTime.getMonth() + 1).padStart(2, '0');
+  const day = String(beijingTime.getDate()).padStart(2, '0');
+  
+  return `${year}-${month}-${day}`;
+};
+
+const getHistoryData = (): HistoryData => {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    console.error("Error reading history", e);
+    return {};
+  }
+};
+
+export const getDailyCount = (listId: string): number => {
+  const history = getHistoryData();
+  const today = getBeijingDateString();
+  return history[listId]?.[today] || 0;
+};
+
+export const incrementDailyCount = (listId: string) => {
+  try {
+    const history = getHistoryData();
+    const today = getBeijingDateString();
+    
+    if (!history[listId]) {
+      history[listId] = {};
+    }
+    
+    history[listId][today] = (history[listId][today] || 0) + 1;
+    
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch (e) {
+    console.error("Error updating history stats", e);
+  }
+};
+
+export const getListHistory = (listId: string): Record<string, number> => {
+  const history = getHistoryData();
+  return history[listId] || {};
+};
+
+// --- Notes Logic ---
+
+export const getNote = (englishWord: string): string => {
+  try {
+    const raw = localStorage.getItem(NOTES_KEY);
+    if (raw) {
+      const notes = JSON.parse(raw);
+      // Use lowercase key for normalization
+      return notes[englishWord.trim().toLowerCase()] || '';
+    }
+  } catch (e) {
+    console.error("Error reading note", e);
+  }
+  return '';
+};
+
+export const saveNote = (englishWord: string, content: string) => {
+  try {
+    const raw = localStorage.getItem(NOTES_KEY);
+    const notes = raw ? JSON.parse(raw) : {};
+    
+    const key = englishWord.trim().toLowerCase();
+    
+    if (content.trim() === '') {
+      delete notes[key];
+    } else {
+      notes[key] = content;
+    }
+    
+    localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  } catch (e) {
+    console.error("Error saving note", e);
+  }
+};
+
+export const getNotesJson = (): string => {
+  return localStorage.getItem(NOTES_KEY) || '{}';
+};
+
+export const importNotesJson = (jsonString: string): boolean => {
+  try {
+    const parsed = JSON.parse(jsonString);
+    if (typeof parsed === 'object' && parsed !== null) {
+      localStorage.setItem(NOTES_KEY, jsonString);
+      return true;
+    }
+  } catch (e) {
+    console.error("Invalid Notes JSON", e);
+  }
+  return false;
 };

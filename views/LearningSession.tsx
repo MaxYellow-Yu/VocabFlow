@@ -3,7 +3,8 @@ import { Word, WordList, LearningMode, CardState, Direction } from '../types';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ListEditor } from '../components/ListEditor';
-import { isDueForReview } from '../services/storageService';
+import { NoteEditor } from '../components/NoteEditor';
+import { isDueForReview, incrementDailyCount, getDailyCount, getNote, saveNote } from '../services/storageService';
 
 interface LearningSessionProps {
   list: WordList;
@@ -24,10 +25,17 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   // Track if we have initialized the queue for the current mode/session
   const [isInitialized, setIsInitialized] = useState(false);
 
+  // Daily Count State
+  const [dailyCount, setDailyCount] = useState(0);
+
   // Copy to List States
   const [isCopyModalOpen, setIsCopyModalOpen] = useState(false);
   const [isCreateListModalOpen, setIsCreateListModalOpen] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+
+  // Note States
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [currentNote, setCurrentNote] = useState('');
 
   // Initialize Queue based on Mode
   // IMPORTANT: Do NOT include 'list' in dependencies to avoid resetting the queue 
@@ -52,6 +60,10 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
     // Shuffle
     initialQueue = initialQueue.sort(() => Math.random() - 0.5);
     setQueue(initialQueue);
+    
+    // Init daily count
+    setDailyCount(getDailyCount(list.id));
+    
     setIsInitialized(true);
   }, [mode]); 
 
@@ -83,6 +95,24 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
 
   const handleCopyWordToList = (targetListId: string) => {
     if (!currentWord) return;
+
+    // Check for duplicates in target list
+    const targetList = allLists.find(l => l.id === targetListId);
+    if (targetList) {
+        const isDuplicate = targetList.words.some(w => 
+            w.english === currentWord.english && 
+            w.phonetic === currentWord.phonetic && 
+            w.chinese === currentWord.chinese
+        );
+
+        if (isDuplicate) {
+             setCopyFeedback("Already in list");
+             setTimeout(() => {
+                setCopyFeedback(null);
+             }, 1000);
+             return; // Do not copy
+        }
+    }
 
     // Create a deep copy of the word with NEW ID and RESET stats
     const newWord: Word = {
@@ -137,6 +167,21 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
     alert(`List "${name}" created and word added!`);
   };
 
+  // --- Note Logic ---
+
+  const handleOpenNote = () => {
+    if (!currentWord) return;
+    const existingNote = getNote(currentWord.english);
+    setCurrentNote(existingNote);
+    setIsNoteModalOpen(true);
+  };
+
+  const handleSaveNote = (content: string) => {
+    if (!currentWord) return;
+    saveNote(currentWord.english, content);
+    setIsNoteModalOpen(false);
+  };
+
 
   const nextCard = () => {
     if (currentIndex < queue.length - 1) {
@@ -167,6 +212,12 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
     const newDates = [...currentWord.masteredDates, Date.now()];
     // Remove from consolidation queue if it was there
     updateWordInList(currentWord.id, { masteredDates: newDates }, false, true);
+
+    if (mode === LearningMode.MEMORIZE) {
+      incrementDailyCount(list.id);
+      setDailyCount(prev => prev + 1);
+    }
+
     nextCard();
   };
 
@@ -183,6 +234,12 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
     }
     
     updateWordInList(currentWord.id, updates, true, false); // Add/Keep in queue
+
+    if (mode === LearningMode.MEMORIZE) {
+      incrementDailyCount(list.id);
+      setDailyCount(prev => prev + 1);
+    }
+
     nextCard();
   };
 
@@ -190,6 +247,12 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   const handleActionStillUnknown = () => {
     if (!currentWord) return;
     updateWordInList(currentWord.id, { incorrectCount: currentWord.incorrectCount + 1 }, true, false);
+    
+    if (mode === LearningMode.MEMORIZE) {
+      incrementDailyCount(list.id);
+      setDailyCount(prev => prev + 1);
+    }
+
     nextCard();
   };
 
@@ -275,8 +338,16 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
         <button onClick={onExit} className="text-gray-400 hover:text-gray-600 transition-colors">
           <Icon name="close" className="text-2xl" />
         </button>
-        <div className="text-xs font-bold tracking-wider text-gray-400 uppercase">
-          {mode} • {currentIndex + 1} / {queue.length}
+        <div className="flex items-center gap-3">
+            <div className="text-xs font-bold tracking-wider text-gray-400 uppercase">
+              {mode} • {currentIndex + 1} / {queue.length}
+            </div>
+            {mode === LearningMode.MEMORIZE && (
+                 <div className="text-xs font-medium text-emerald-500 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100 flex items-center gap-1">
+                    <Icon name="trending_up" className="text-[14px]" />
+                    {dailyCount}
+                 </div>
+            )}
         </div>
         <div className="w-6" /> {/* Spacer */}
       </div>
@@ -287,15 +358,26 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
             
             <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 opacity-20" />
             
-            {/* Add to Other List Button (Only visible when definition is shown) */}
+            {/* Action Buttons (Only visible when definition is shown) */}
             {!isQuestion && (
-              <button 
-                onClick={() => setIsCopyModalOpen(true)}
-                className="absolute top-4 right-4 p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors z-10"
-                title="Add to another list"
-              >
-                <Icon name="playlist_add" className="text-2xl" />
-              </button>
+              <div className="absolute top-4 right-4 flex gap-2 z-10">
+                {/* Add Note Button */}
+                <button 
+                  onClick={handleOpenNote}
+                  className="p-2 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-full transition-colors"
+                  title="Add Note"
+                >
+                  <Icon name="edit_note" className="text-2xl" />
+                </button>
+                {/* Add to Other List Button */}
+                <button 
+                  onClick={() => setIsCopyModalOpen(true)}
+                  className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"
+                  title="Add to another list"
+                >
+                  <Icon name="playlist_add" className="text-2xl" />
+                </button>
+              </div>
             )}
 
             {renderContent()}
@@ -361,6 +443,23 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
         </div>
       </div>
 
+      {/* Note Modal */}
+      <Modal
+        isOpen={isNoteModalOpen}
+        onClose={() => setIsNoteModalOpen(false)}
+        title="Word Note"
+        maxWidth="max-w-4xl"
+      >
+        <div className="min-w-full md:min-w-[600px]">
+          <NoteEditor 
+            englishWord={currentWord?.english || ''}
+            initialContent={currentNote}
+            onSave={handleSaveNote}
+            onCancel={() => setIsNoteModalOpen(false)}
+          />
+        </div>
+      </Modal>
+
       {/* Copy to List Modal */}
       <Modal
         isOpen={isCopyModalOpen}
@@ -405,7 +504,7 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
           {copyFeedback && (
              <div className="absolute inset-0 flex items-center justify-center bg-white/90 z-10 animate-in fade-in">
                 <div className="flex flex-col items-center text-emerald-600">
-                   <Icon name="check_circle" className="text-4xl mb-1" />
+                   <Icon name={copyFeedback === 'Already in list' ? "error_outline" : "check_circle"} className="text-4xl mb-1" />
                    <span className="font-bold">{copyFeedback}</span>
                 </div>
              </div>
