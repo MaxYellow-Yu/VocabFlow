@@ -10,9 +10,9 @@ export default defineConfig({
   assetsInclude: ['**/*.db'], // Ensure .db files are handled correctly
   build: {
     rollupOptions: {
-      // Tell Rollup that 'xlsx' is external and should not be bundled.
-      // The browser will resolve it using the importmap in index.html.
-      external: ['xlsx']
+      // Tell Rollup that 'xlsx' and 'marked' are external and should not be bundled.
+      // The browser will resolve them using the importmap in index.html.
+      external: ['xlsx', 'marked']
     }
   }
 })
