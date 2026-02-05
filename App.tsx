@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { WordList, LearningMode } from './types';
 import { loadLists, saveLists } from './services/storageService';
+import { initializeDictionary } from './services/dictionaryService';
 import { Dashboard } from './views/Dashboard';
 import { LearningSession } from './views/LearningSession';
 
@@ -11,6 +12,9 @@ const App: React.FC = () => {
   useEffect(() => {
     const data = loadLists();
     setLists(data);
+    
+    // Preload dictionary database for faster lookups
+    initializeDictionary();
   }, []);
 
   const handleUpdateLists = (newLists: WordList[]) => {

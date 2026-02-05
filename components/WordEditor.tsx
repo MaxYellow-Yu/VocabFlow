@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Word } from '../types';
 import { Icon } from './Icon';
+import { lookupExactWord } from '../services/dictionaryService';
 
 interface WordEditorProps {
   initialWord?: Word;
@@ -34,78 +35,15 @@ export const WordEditor: React.FC<WordEditorProps> = ({ initialWord, onSave, onC
     setIsAutoFilling(true);
     setStatusMsg(null);
     try {
-      // 1. Initialize SQL.js
-      // @ts-ignore
-      if (!window.initSqlJs) {
-        throw new Error("SQL.js not loaded");
-      }
-      // @ts-ignore
-      const SQL = await window.initSqlJs({
-        // Point to the WASM file on the CDN
-        locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
-      });
+      const result = await lookupExactWord(english);
 
-      // 2. Fetch the database file
-      // Robustly construct the path. 
-      // If deployed at https://user.github.io/repo/, and base is './', 
-      // fetch('lookup.db') works relative to index.html.
-      const dbFilename = 'lookup.db';
-      
-      // Calculate the absolute URL for debugging purposes
-      const resolvedUrl = new URL(dbFilename, window.location.href).href;
-      console.log(`Attempting to fetch dictionary from: ${resolvedUrl}`);
-
-      const response = await fetch(dbFilename);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: Could not find file at ${resolvedUrl}`);
-      }
-      const arrayBuffer = await response.arrayBuffer();
-
-      // 3. Load Database
-      const db = new SQL.Database(new Uint8Array(arrayBuffer));
-
-      // 4. Find valid dictionary tables (starting with "dict")
-      const tablesQuery = "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'dict%'";
-      const tablesResult = db.exec(tablesQuery);
-
-      let found = false;
-      const targetWord = english.trim().toLowerCase();
-      const safeWord = targetWord.replace(/'/g, "''");
-
-      if (tablesResult.length > 0 && tablesResult[0].values) {
-        const tables = tablesResult[0].values.flat();
-        
-        // 5. Iterate tables
-        for (const tableName of tables) {
-          const query = `SELECT word, accent, mean_cn FROM ${tableName} WHERE LOWER(word) = '${safeWord}' LIMIT 1`;
-          try {
-            const res = db.exec(query);
-            if (res.length > 0 && res[0].values.length > 0) {
-              const row = res[0].values[0];
-              const dbPhonetic = row[1] ? String(row[1]) : '';
-              const dbChinese = row[2] ? String(row[2]) : '';
-
-              if (dbChinese) {
-                setChinese(dbChinese);
-                setPhonetic(dbPhonetic); 
-                found = true;
-                break;
-              }
-            }
-          } catch (err) {
-            console.warn(`Error querying table ${tableName}`, err);
-          }
-        }
-      }
-
-      if (!found) {
-        setStatusMsg({ type: 'error', text: `Word "${english}" not found in offline dictionary.` });
-      } else {
+      if (result) {
+        setChinese(result.meaning);
+        setPhonetic(result.phonetic);
         setStatusMsg({ type: 'success', text: 'Auto-fill successful!' });
+      } else {
+        setStatusMsg({ type: 'error', text: `Word "${english}" not found in offline dictionary.` });
       }
-
-      db.close();
 
     } catch (error: any) {
       console.error("Auto-fill error:", error);

@@ -7,8 +7,10 @@ import { WordEditor } from '../components/WordEditor';
 import { ListEditor } from '../components/ListEditor';
 import { NoteEditor } from '../components/NoteEditor';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
+import { DictionaryModal } from '../components/DictionaryModal';
 import { Modal } from '../components/Modal';
-import { getRawDataJson, importRawDataJson, resetToDefaults, getNextReviewTime, getDailyCount, getNotesJson, importNotesJson, getNote, saveNote, getListHistory } from '../services/storageService';
+import { getRawDataJson, importRawDataJson, resetToDefaults, getNextReviewTime, getDailyCount, getNotesJson, importNotesJson, getNote, saveNote, getListHistory, isDueForReview, mergeListHistory } from '../services/storageService';
+import { DictionaryResult } from '../services/dictionaryService';
 
 interface DashboardProps {
   lists: WordList[];
@@ -80,6 +82,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
   const [noteTargetWord, setNoteTargetWord] = useState<Word | null>(null);
   const [noteContent, setNoteContent] = useState('');
+
+  // Dictionary Modal State
+  const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
 
   // History Modal State
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -254,7 +259,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
       if (content) {
         const success = importNotesJson(content);
         if (success) {
-          alert('Notes imported successfully!');
+          alert('Notes and relations imported successfully!');
         } else {
           alert('Failed to import notes. Invalid format.');
         }
@@ -266,7 +271,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
 
 
   const handleExportSingleList = (list: WordList) => {
-    const jsonString = JSON.stringify(list, null, 2);
+    // Collect the list AND its specific history
+    const history = getListHistory(list.id);
+    
+    const exportObject = {
+        version: 2,
+        list: list,
+        history: history
+    };
+
+    const jsonString = JSON.stringify(exportObject, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -293,20 +307,40 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
         try {
             const content = event.target?.result as string;
             const parsed = JSON.parse(content);
+            let newList: WordList;
+            let listHistory: Record<string, number> | null = null;
 
-            // Basic Validation
-            if (!parsed.name || !Array.isArray(parsed.words)) {
+            // Check if it's the new bundled format
+            if (parsed.list && parsed.history) {
+                 newList = parsed.list;
+                 listHistory = parsed.history;
+            } else if (parsed.name && Array.isArray(parsed.words)) {
+                 // Legacy single list format
+                 newList = parsed;
+            } else {
                 throw new Error("Invalid list format");
             }
 
-            // Create new list with unique ID
-            const newList: WordList = {
-                ...parsed,
-                id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-                consolidationQueueIds: Array.isArray(parsed.consolidationQueueIds) ? parsed.consolidationQueueIds : []
+            // Regenerate ID to prevent collisions, but keep name/words
+            // Note: If we import history, we want to associate it with this new ID
+            // BUT, usually people import to restore progress. 
+            // If we regenerate ID, the old history won't match if we just used the old ID.
+            // Strategy: Regenerate ID for the list, and map the history to this new ID.
+            const newId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+            
+            newList = {
+                ...newList,
+                id: newId,
+                consolidationQueueIds: Array.isArray(newList.consolidationQueueIds) ? newList.consolidationQueueIds : []
             };
 
             onUpdateLists([...lists, newList]);
+            
+            // If history exists in the import, map it to the new list ID and merge
+            if (listHistory) {
+                mergeListHistory(newId, listHistory);
+            }
+
             alert(`List "${newList.name}" imported successfully!`);
         } catch (error) {
             console.error("Import error:", error);
@@ -475,6 +509,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     setIsCopyModalOpen(true);
   };
 
+  // New handler for adding from dictionary
+  const handleDictionaryAdd = (result: DictionaryResult) => {
+    const tempWord: Word = {
+      id: 'dict-' + Date.now(), // Temporary ID, will be regenerated when copied to list
+      english: result.word,
+      phonetic: result.phonetic,
+      chinese: result.meaning,
+      masteredDates: [],
+      incorrectCount: 0
+    };
+    
+    // Set sourceListId to empty string to indicate it comes from outside any list
+    setCopyingWordData({ word: tempWord, sourceListId: '' });
+    setIsCopyModalOpen(true);
+  };
+
   const handleCopyWordToList = (targetListId: string) => {
     if (!copyingWordData) return;
 
@@ -542,10 +592,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
     };
 
     onUpdateLists([...lists, newList]);
+    
+    // Feedback handling similar to copying to existing list
+    setCopyFeedback("List Created & Word Added!");
     setIsCopyCreateListModalOpen(false);
-    setIsCopyModalOpen(false);
-    setCopyingWordData(null);
-    alert(`List "${name}" created and word added!`);
+    
+    setTimeout(() => {
+       setCopyFeedback(null);
+       setIsCopyModalOpen(false);
+       setCopyingWordData(null);
+    }, 1500);
   };
 
   // --- Note Logic ---
@@ -649,6 +705,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           <p className="text-gray-500 mt-1">Spaced Repetition System</p>
         </div>
         <div className="flex gap-3 items-center self-start sm:self-auto">
+          
+          {/* Dictionary Button */}
+          <button 
+             onClick={() => setIsDictionaryOpen(true)}
+             className="flex items-center justify-center p-2 rounded-lg bg-white border border-gray-200 text-gray-500 hover:text-indigo-600 hover:border-indigo-200 transition-colors shadow-sm"
+             title="Dictionary Lookup"
+          >
+             <Icon name="menu_book" />
+          </button>
+
           {/* Search Bar */}
           <div className={`flex items-center bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden transition-all duration-300 ease-in-out ${isSearchOpen ? 'w-full sm:w-64' : 'w-10'}`}>
              <button
@@ -706,8 +772,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
 
           const isExpanded = expandedListId === list.id;
           const total = displayWords.length;
-          const masteredCount = displayWords.filter(w => w.masteredDates.length > 0).length;
-          const queueSize = displayWords.filter(w => list.consolidationQueueIds.includes(w.id)).length;
+          
+          const masteredCount = displayWords.filter(w => w.masteredDates.length > 0 && !list.consolidationQueueIds.includes(w.id)).length;
+          
+          // Ebbinghaus Due Count
+          const dueCount = displayWords.filter(w => isDueForReview(w)).length;
+
           const dailyCount = getDailyCount(list.id);
 
           // --- Classification & Sorting Logic (Based on Filtered Words) ---
@@ -783,6 +853,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                       Today: {dailyCount}
                    </div>
                 </div>
+                {/* Progress Bar: Shows ratio of Mastered vs Total */}
                 <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden mb-4">
                   <div 
                     className="bg-emerald-500 h-full transition-all duration-500" 
@@ -801,18 +872,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                   </button>
                   <button 
                      onClick={() => onSelectSession(list.id, LearningMode.CONSOLIDATE)}
-                     disabled={queueSize === 0}
-                     className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold transition-colors ${queueSize > 0 ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' : 'bg-gray-50 text-gray-300 cursor-not-allowed'}`}
+                     disabled={queueWords.length === 0}
+                     className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold transition-colors ${queueWords.length > 0 ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' : 'bg-gray-50 text-gray-300 cursor-not-allowed'}`}
                   >
                     <Icon name="fitness_center" />
-                    Review Queue ({queueSize})
+                    Review Queue ({queueWords.length})
                   </button>
                   <button 
                      onClick={() => onSelectSession(list.id, LearningMode.REVIEW)}
                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-emerald-50 text-emerald-700 rounded-xl hover:bg-emerald-100 transition-colors font-semibold"
                   >
                     <Icon name="history" />
-                    Ebbinghaus
+                    Ebbinghaus ({dueCount})
                   </button>
                 </div>
               </div>
@@ -821,11 +892,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
               {isExpanded && (
                 <div className="border-t border-gray-100 bg-gray-50 p-4 pb-8 min-h-[400px] cursor-default" onClick={e => e.stopPropagation()}>
                    
-                   {/* ACTION BUTTONS MOVED ABOVE TABS */}
-                   <div className="flex justify-end gap-3 mb-4">
+                   {/* ACTION BUTTONS - IMPROVED WRAPPING FOR MOBILE */}
+                   <div className="flex flex-wrap justify-end gap-2 mb-4">
                       <button 
                         onClick={() => handleViewHistory(list.id)}
-                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm bg-white/50 border-gray-100"
                         title="View learning history"
                       >
                         <Icon name="calendar_today" className="text-lg" />
@@ -833,15 +904,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                       </button>
                       <button 
                         onClick={() => handleExportSingleList(list)}
-                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-indigo-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm bg-white/50 border-gray-100"
                         title="Export this list as JSON"
                       >
                         <Icon name="download" className="text-lg" />
-                        Export JSON
+                        JSON
                       </button>
                       <button 
                         onClick={() => handleImportExcelClick(list.id)}
-                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-emerald-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                        className="flex items-center gap-1 text-sm text-gray-600 font-medium hover:text-emerald-700 hover:bg-white px-3 py-2 rounded-lg border border-transparent hover:border-gray-200 transition-all shadow-sm bg-white/50 border-gray-100"
                       >
                         <Icon name="post_add" className="text-lg" />
                         Import Excel
@@ -1081,6 +1152,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
         </div>
       </Modal>
 
+      {/* Dictionary Modal */}
+      <DictionaryModal 
+        isOpen={isDictionaryOpen} 
+        onClose={() => setIsDictionaryOpen(false)}
+        onAddWord={handleDictionaryAdd}
+      />
+
       {/* History Heatmap Modal */}
       <Modal
         isOpen={isHistoryModalOpen}
@@ -1089,7 +1167,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
         maxWidth="max-w-6xl"
       >
         <div className="space-y-6">
-           <div className="bg-gray-50 rounded-xl p-6 border border-gray-100 flex justify-center overflow-x-auto">
+           <div className="bg-gray-50 rounded-xl p-4 sm:p-6 border border-gray-100 flex justify-center">
              {historyTargetListId && (
                 <ActivityHeatmap data={getListHistory(historyTargetListId)} />
              )}

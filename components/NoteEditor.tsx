@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 // @ts-ignore
 import { marked } from 'marked';
+import { getRelatedWords } from '../services/storageService';
+import { lookupExactWord, DictionaryResult } from '../services/dictionaryService';
+import { Icon } from './Icon';
 
 interface NoteEditorProps {
   englishWord: string;
@@ -11,10 +14,36 @@ interface NoteEditorProps {
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({ englishWord, initialContent, onSave, onCancel }) => {
   const [content, setContent] = useState('');
+  const [relatedWords, setRelatedWords] = useState<DictionaryResult[]>([]);
+  const [loadingRelations, setLoadingRelations] = useState(false);
 
   useEffect(() => {
     setContent(initialContent || '');
-  }, [initialContent]);
+    
+    const fetchRelations = async () => {
+        setLoadingRelations(true);
+        const words = getRelatedWords(englishWord);
+        
+        if (words.length > 0) {
+            const results: DictionaryResult[] = [];
+            for (const w of words) {
+                const details = await lookupExactWord(w);
+                if (details) {
+                    results.push(details);
+                } else {
+                    // Fallback if offline lookup fails
+                    results.push({ word: w, phonetic: '', meaning: 'Definition not found locally.' });
+                }
+            }
+            setRelatedWords(results);
+        } else {
+            setRelatedWords([]);
+        }
+        setLoadingRelations(false);
+    };
+
+    fetchRelations();
+  }, [initialContent, englishWord]);
 
   const getMarkdownHtml = (markdown: string) => {
     try {
@@ -31,6 +60,35 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({ englishWord, initialCont
           Notes for <span className="text-indigo-600">"{englishWord}"</span>
         </h3>
         <p className="text-sm text-gray-500">Shared across all lists.</p>
+      </div>
+      
+      {/* Related Words Section - Inline Style */}
+      <div className="mb-4 bg-gray-50/50 rounded-lg p-3">
+         <div className="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
+            <Icon name="link" className="text-sm" />
+            Related Words
+         </div>
+         
+         {loadingRelations ? (
+             <div className="text-xs text-gray-400 flex items-center gap-1">
+                 <Icon name="hourglass_empty" className="animate-spin text-sm" /> Loading...
+             </div>
+         ) : relatedWords.length > 0 ? (
+             <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2">
+                 {relatedWords.map((rw, idx) => (
+                     <div key={idx} className="inline-flex items-baseline gap-1.5 text-sm">
+                         <span className="font-bold text-indigo-700 cursor-pointer hover:underline flex-shrink-0" title={rw.phonetic}>
+                            {rw.word}
+                         </span>
+                         <span className="text-gray-500 text-xs">
+                            {rw.meaning}
+                         </span>
+                     </div>
+                 ))}
+             </div>
+         ) : (
+             <div className="text-xs text-gray-400 italic">No related words linked yet. Use the dictionary in learning mode to add links.</div>
+         )}
       </div>
 
       <div className="flex-1 flex flex-col md:flex-row gap-4 min-h-0">

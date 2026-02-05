@@ -4,7 +4,9 @@ import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ListEditor } from '../components/ListEditor';
 import { NoteEditor } from '../components/NoteEditor';
-import { isDueForReview, incrementDailyCount, getDailyCount, getNote, saveNote } from '../services/storageService';
+import { DictionaryModal } from '../components/DictionaryModal';
+import { isDueForReview, incrementDailyCount, getDailyCount, getNote, saveNote, addWordRelation } from '../services/storageService';
+import { DictionaryResult } from '../services/dictionaryService';
 
 interface LearningSessionProps {
   list: WordList;
@@ -32,10 +34,14 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   const [isCopyModalOpen, setIsCopyModalOpen] = useState(false);
   const [isCreateListModalOpen, setIsCreateListModalOpen] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [copyingWordData, setCopyingWordData] = useState<{ word: Word, sourceListId: string } | null>(null);
 
   // Note States
   const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
   const [currentNote, setCurrentNote] = useState('');
+
+  // Dictionary States
+  const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
 
   // Initialize Queue based on Mode
   // IMPORTANT: Do NOT include 'list' in dependencies to avoid resetting the queue 
@@ -94,15 +100,16 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   // --- Copy Word Logic ---
 
   const handleCopyWordToList = (targetListId: string) => {
-    if (!currentWord) return;
+    if (!copyingWordData) return;
+    const wordToCopy = copyingWordData.word;
 
     // Check for duplicates in target list
     const targetList = allLists.find(l => l.id === targetListId);
     if (targetList) {
         const isDuplicate = targetList.words.some(w => 
-            w.english === currentWord.english && 
-            w.phonetic === currentWord.phonetic && 
-            w.chinese === currentWord.chinese
+            w.english === wordToCopy.english && 
+            w.phonetic === wordToCopy.phonetic && 
+            w.chinese === wordToCopy.chinese
         );
 
         if (isDuplicate) {
@@ -116,7 +123,7 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
 
     // Create a deep copy of the word with NEW ID and RESET stats
     const newWord: Word = {
-      ...currentWord,
+      ...wordToCopy,
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
       masteredDates: [],
       incorrectCount: 0
@@ -138,14 +145,16 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
     setTimeout(() => {
       setCopyFeedback(null);
       setIsCopyModalOpen(false);
+      setCopyingWordData(null);
     }, 1000);
   };
 
   const handleCreateListAndCopy = (name: string, description: string) => {
-    if (!currentWord) return;
+    if (!copyingWordData) return;
+    const wordToCopy = copyingWordData.word;
 
     const newWord: Word = {
-      ...currentWord,
+      ...wordToCopy,
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
       masteredDates: [],
       incorrectCount: 0
@@ -160,11 +169,36 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
     };
 
     onUpdateGlobalLists([...allLists, newList]);
-    setIsCreateListModalOpen(false);
-    setIsCopyModalOpen(false);
     
-    // Show quick feedback
-    alert(`List "${name}" created and word added!`);
+    // Feedback handling
+    setCopyFeedback("List Created & Word Added!");
+    setIsCreateListModalOpen(false);
+    
+    setTimeout(() => {
+       setCopyFeedback(null);
+       setIsCopyModalOpen(false);
+       setCopyingWordData(null);
+    }, 1500);
+  };
+
+  const handleDictionaryAdd = (result: DictionaryResult) => {
+    const tempWord: Word = {
+      id: 'dict-' + Date.now(),
+      english: result.word,
+      phonetic: result.phonetic,
+      chinese: result.meaning,
+      masteredDates: [],
+      incorrectCount: 0
+    };
+    
+    setCopyingWordData({ word: tempWord, sourceListId: '' });
+    setIsCopyModalOpen(true);
+  };
+
+  const handleAddRelation = (result: DictionaryResult) => {
+    if (!currentWord) return false;
+    
+    return addWordRelation(currentWord.english, result.word);
   };
 
   // --- Note Logic ---
@@ -297,6 +331,11 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   const isEnToZh = direction === Direction.EN_ZH;
   const isQuestion = cardState === CardState.QUESTION;
   
+  // Calculate list progress statistics
+  const totalWords = list.words.length;
+  // Learned: Words currently in Queue OR Words that have been Mastered at least once
+  const learnedCount = list.words.filter(w => list.consolidationQueueIds.includes(w.id) || w.masteredDates.length > 0).length;
+  
   // What to show?
   const renderContent = () => {
     return (
@@ -340,7 +379,7 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
         </button>
         <div className="flex items-center gap-3">
             <div className="text-xs font-bold tracking-wider text-gray-400 uppercase">
-              {mode} • {currentIndex + 1} / {queue.length}
+              {mode} • {learnedCount} / {totalWords}
             </div>
             {mode === LearningMode.MEMORIZE && (
                  <div className="text-xs font-medium text-emerald-500 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100 flex items-center gap-1">
@@ -361,6 +400,14 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
             {/* Action Buttons (Only visible when definition is shown) */}
             {!isQuestion && (
               <div className="absolute top-4 right-4 flex gap-2 z-10">
+                {/* Dictionary Button - NEW */}
+                <button
+                  onClick={() => setIsDictionaryOpen(true)}
+                  className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"
+                  title="Dictionary"
+                >
+                  <Icon name="menu_book" className="text-2xl" />
+                </button>
                 {/* Add Note Button */}
                 <button 
                   onClick={handleOpenNote}
@@ -371,7 +418,12 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
                 </button>
                 {/* Add to Other List Button */}
                 <button 
-                  onClick={() => setIsCopyModalOpen(true)}
+                  onClick={() => {
+                      if(currentWord) {
+                          setCopyingWordData({ word: currentWord, sourceListId: list.id });
+                          setIsCopyModalOpen(true);
+                      }
+                  }}
                   className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"
                   title="Add to another list"
                 >
@@ -460,20 +512,32 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
         </div>
       </Modal>
 
+      {/* Dictionary Modal */}
+      <DictionaryModal 
+        isOpen={isDictionaryOpen} 
+        onClose={() => setIsDictionaryOpen(false)}
+        onAddWord={handleDictionaryAdd}
+        currentLearningWord={currentWord?.english}
+        onAddRelation={handleAddRelation}
+      />
+
       {/* Copy to List Modal */}
       <Modal
         isOpen={isCopyModalOpen}
-        onClose={() => setIsCopyModalOpen(false)}
+        onClose={() => {
+           setIsCopyModalOpen(false);
+           setCopyingWordData(null);
+        }}
         title="Add to List"
       >
         <div className="space-y-2">
           <p className="text-sm text-gray-500 mb-4">
-             Select a list to copy <strong>"{currentWord?.english}"</strong> into. 
+             Select a list to copy <strong>"{copyingWordData?.word.english}"</strong> into. 
              This will create a fresh copy with 0 errors and no mastery history.
           </p>
 
           <div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-1">
-             {allLists.filter(l => l.id !== list.id).map(l => (
+             {allLists.filter(l => l.id !== copyingWordData?.sourceListId).map(l => (
                 <button
                    key={l.id}
                    onClick={() => handleCopyWordToList(l.id)}
@@ -486,7 +550,7 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
                    <Icon name="add" className="text-gray-300 group-hover:text-indigo-500" />
                 </button>
              ))}
-             {allLists.filter(l => l.id !== list.id).length === 0 && (
+             {allLists.filter(l => l.id !== copyingWordData?.sourceListId).length === 0 && (
                <p className="text-center text-gray-400 py-2 text-sm">No other lists available.</p>
              )}
           </div>

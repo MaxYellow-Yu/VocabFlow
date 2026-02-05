@@ -3,6 +3,7 @@ import { WordList, Word } from '../types';
 const STORAGE_KEY = 'vocabflow_data';
 const HISTORY_KEY = 'vocabflow_history'; // Changed from DAILY_STATS_KEY
 const NOTES_KEY = 'vocabflow_notes';
+const RELATIONS_KEY = 'vocabflow_relations';
 
 const DEFAULT_DATA: WordList[] = [
   {
@@ -50,17 +51,39 @@ export const saveLists = (lists: WordList[]) => {
 
 // --- Data Management Helpers ---
 
+// Modified: Exports both Lists and History
 export const getRawDataJson = (): string => {
-  const data = localStorage.getItem(STORAGE_KEY);
-  return data || JSON.stringify(DEFAULT_DATA);
+  const listsData = localStorage.getItem(STORAGE_KEY);
+  const historyData = localStorage.getItem(HISTORY_KEY);
+  
+  const exportData = {
+    version: 2,
+    lists: listsData ? JSON.parse(listsData) : DEFAULT_DATA,
+    history: historyData ? JSON.parse(historyData) : {}
+  };
+
+  return JSON.stringify(exportData);
 };
 
+// Modified: Imports both Lists and History (Supports legacy array format)
 export const importRawDataJson = (jsonString: string): boolean => {
   try {
     const parsed = JSON.parse(jsonString);
-    // Basic validation to check if it looks like an array of lists
+    
+    // Check if it's the new bundled format
+    if (parsed.lists && parsed.history) {
+       localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed.lists));
+       localStorage.setItem(HISTORY_KEY, JSON.stringify(parsed.history));
+       return true;
+    }
+    
+    // Legacy support: Check if it's just an array of lists
     if (Array.isArray(parsed) && parsed.length > 0 && 'words' in parsed[0]) {
       localStorage.setItem(STORAGE_KEY, jsonString);
+      // If importing legacy lists only, we keep existing history or init empty
+      if (!localStorage.getItem(HISTORY_KEY)) {
+        localStorage.setItem(HISTORY_KEY, '{}');
+      }
       return true;
     }
   } catch (e) {
@@ -73,6 +96,7 @@ export const resetToDefaults = () => {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(HISTORY_KEY);
     localStorage.removeItem(NOTES_KEY);
+    localStorage.removeItem(RELATIONS_KEY);
 }
 
 // Ebbinghaus Intervals in milliseconds (approximate for demo)
@@ -161,6 +185,18 @@ export const getListHistory = (listId: string): Record<string, number> => {
   return history[listId] || {};
 };
 
+// NEW: Helper to merge history for a single list (used when importing a list)
+export const mergeListHistory = (listId: string, newListHistory: Record<string, number>) => {
+  try {
+    const history = getHistoryData();
+    // Overwrite history for this specific list ID with the imported data
+    history[listId] = newListHistory;
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch (e) {
+    console.error("Error merging list history", e);
+  }
+};
+
 // --- Notes Logic ---
 
 export const getNote = (englishWord: string): string => {
@@ -196,19 +232,95 @@ export const saveNote = (englishWord: string, content: string) => {
   }
 };
 
+// Modified: Exports both Notes and Relations
 export const getNotesJson = (): string => {
-  return localStorage.getItem(NOTES_KEY) || '{}';
+  const notes = localStorage.getItem(NOTES_KEY);
+  const relations = localStorage.getItem(RELATIONS_KEY);
+  
+  const exportData = {
+    version: 2,
+    notes: notes ? JSON.parse(notes) : {},
+    relations: relations ? JSON.parse(relations) : []
+  };
+
+  return JSON.stringify(exportData);
 };
 
+// Modified: Imports both Notes and Relations (Supports legacy format)
 export const importNotesJson = (jsonString: string): boolean => {
   try {
     const parsed = JSON.parse(jsonString);
-    if (typeof parsed === 'object' && parsed !== null) {
+
+    // New format with relations
+    if (parsed.notes && Array.isArray(parsed.relations)) {
+      localStorage.setItem(NOTES_KEY, JSON.stringify(parsed.notes));
+      localStorage.setItem(RELATIONS_KEY, JSON.stringify(parsed.relations));
+      return true;
+    }
+
+    // Legacy format (just the notes object)
+    if (typeof parsed === 'object' && parsed !== null && !parsed.notes) {
       localStorage.setItem(NOTES_KEY, jsonString);
+      // Keep existing relations or init empty
+      if (!localStorage.getItem(RELATIONS_KEY)) {
+         localStorage.setItem(RELATIONS_KEY, '[]');
+      }
       return true;
     }
   } catch (e) {
     console.error("Invalid Notes JSON", e);
   }
   return false;
+};
+
+// --- Relations Logic ---
+
+// Returns array of [wordA, wordB]
+const getRelationsData = (): [string, string][] => {
+  try {
+    const raw = localStorage.getItem(RELATIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.error("Error reading relations", e);
+    return [];
+  }
+};
+
+// Adds a relation between two words if it doesn't exist
+export const addWordRelation = (word1: string, word2: string): boolean => {
+  const w1 = word1.trim().toLowerCase();
+  const w2 = word2.trim().toLowerCase();
+
+  if (!w1 || !w2 || w1 === w2) return false;
+
+  const relations = getRelationsData();
+  
+  // Sort to ensure order independence: always [alpha, beta]
+  const pair = [w1, w2].sort();
+  
+  // Check existence
+  const exists = relations.some(r => r[0] === pair[0] && r[1] === pair[1]);
+  
+  if (!exists) {
+    // @ts-ignore
+    relations.push(pair);
+    localStorage.setItem(RELATIONS_KEY, JSON.stringify(relations));
+    return true; // Added
+  }
+  return false; // Already exists
+};
+
+// Gets list of words related to the target word
+export const getRelatedWords = (word: string): string[] => {
+  const target = word.trim().toLowerCase();
+  const relations = getRelationsData();
+  
+  const related = new Set<string>();
+  
+  relations.forEach(pair => {
+    if (pair[0] === target) related.add(pair[1]);
+    if (pair[1] === target) related.add(pair[0]);
+  });
+  
+  return Array.from(related);
 };
