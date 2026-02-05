@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Icon } from './Icon';
 
 interface ActivityHeatmapProps {
@@ -66,7 +66,6 @@ export const ActivityHeatmap: React.FC<ActivityHeatmapProps> = ({ data }) => {
         // Check for month change to add label
         // We label a month if this week contains the 1st of the month OR if it's the first week and we need a label
         const firstDayOfWeek = currentWeek[0];
-        const lastDayOfWeek = currentWeek[6];
         
         // Get English Month Name
         const monthName = new Date(firstDayOfWeek.date).toLocaleString('en-US', { month: 'short' });
