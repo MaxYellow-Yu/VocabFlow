@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Word, WordList, LearningMode, CardState, Direction } from '../types';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { ListEditor } from '../components/ListEditor';
 import { NoteEditor } from '../components/NoteEditor';
 import { DictionaryModal } from '../components/DictionaryModal';
+import { DefinitionModal } from '../components/DefinitionModal';
 import { isDueForReview, incrementDailyCount, getDailyCount, getNote, saveNote, addWordRelation } from '../services/storageService';
 import { DictionaryResult } from '../services/dictionaryService';
 
@@ -42,6 +43,28 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
 
   // Dictionary States
   const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
+  const [isDefinitionOpen, setIsDefinitionOpen] = useState(false);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const playAudio = (wordText: string) => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    const url = `https://fanyi.baidu.com/gettts?lan=uk&text=${encodeURIComponent(wordText)}&spd=3&source=web`;
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(e => {
+        if (e.name !== 'AbortError') {
+          console.error("Audio play failed:", e);
+        }
+      });
+    }
+  };
 
   // Initialize Queue based on Mode
   // IMPORTANT: Do NOT include 'list' in dependencies to avoid resetting the queue 
@@ -59,8 +82,8 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
       // In consolidation queue
       initialQueue = list.words.filter(w => list.consolidationQueueIds.includes(w.id));
     } else if (mode === LearningMode.REVIEW) {
-      // Mastered at least once AND due
-      initialQueue = list.words.filter(w => isDueForReview(w));
+      // Mastered at least once AND due AND not in consolidation queue
+      initialQueue = list.words.filter(w => isDueForReview(w) && !list.consolidationQueueIds.includes(w.id));
     }
 
     // Shuffle
@@ -74,6 +97,20 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   }, [mode]); 
 
   const currentWord = queue[currentIndex];
+
+  const isEnToZh = direction === Direction.EN_ZH;
+  const isQuestion = cardState === CardState.QUESTION;
+
+  useEffect(() => {
+    if (!currentWord) return;
+    
+    // Play audio when English word is shown
+    if (isEnToZh && isQuestion) {
+      playAudio(currentWord.english);
+    } else if (!isEnToZh && !isQuestion) {
+      playAudio(currentWord.english);
+    }
+  }, [currentWord, isQuestion, isEnToZh]);
 
   // Helper to update a specific word in the list and persist
   // Note: We use the `list` prop here which is kept fresh by parent updates
@@ -328,22 +365,33 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
   }
 
   // Render logic
-  const isEnToZh = direction === Direction.EN_ZH;
-  const isQuestion = cardState === CardState.QUESTION;
-  
   // Calculate list progress statistics
   const totalWords = list.words.length;
   // Learned: Words currently in Queue OR Words that have been Mastered at least once
   const learnedCount = list.words.filter(w => list.consolidationQueueIds.includes(w.id) || w.masteredDates.length > 0).length;
+
+  let progressText = `${learnedCount} / ${totalWords}`;
+  if (mode === LearningMode.CONSOLIDATE || mode === LearningMode.REVIEW) {
+    progressText = `${currentIndex} / ${queue.length}`;
+  }
   
   // What to show?
   const renderContent = () => {
     return (
       <div className="flex flex-col items-center text-center space-y-6 w-full">
         {/* Main Term */}
-        <div className="mt-8">
+        <div className="mt-8 flex flex-col items-center">
            {isEnToZh ? (
-             <h1 className="text-4xl md:text-5xl font-bold text-gray-800">{currentWord.english}</h1>
+             <>
+               <h1 className="text-4xl md:text-5xl font-bold text-gray-800">{currentWord.english}</h1>
+               <button 
+                 onClick={(e) => { e.stopPropagation(); playAudio(currentWord.english); }}
+                 className="mt-2 p-2 text-gray-400 hover:text-indigo-600 rounded-full transition-colors"
+                 title="Play Audio"
+               >
+                 <Icon name="volume_up" className="text-2xl" />
+               </button>
+             </>
            ) : (
              <h1 className="text-4xl md:text-5xl font-bold text-gray-800">{currentWord.chinese}</h1>
            )}
@@ -362,7 +410,16 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
              {isEnToZh ? (
                <p className="text-2xl text-indigo-900 font-medium">{currentWord.chinese}</p>
              ) : (
-               <p className="text-2xl text-indigo-900 font-bold">{currentWord.english}</p>
+               <div className="flex flex-col items-center">
+                 <p className="text-2xl text-indigo-900 font-bold">{currentWord.english}</p>
+                 <button 
+                   onClick={(e) => { e.stopPropagation(); playAudio(currentWord.english); }}
+                   className="mt-2 p-2 text-indigo-400 hover:text-indigo-600 rounded-full transition-colors"
+                   title="Play Audio"
+                 >
+                   <Icon name="volume_up" className="text-2xl" />
+                 </button>
+               </div>
              )}
           </div>
         )}
@@ -379,7 +436,7 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
         </button>
         <div className="flex items-center gap-3">
             <div className="text-xs font-bold tracking-wider text-gray-400 uppercase">
-              {mode} • {learnedCount} / {totalWords}
+              {mode} • {progressText}
             </div>
             {mode === LearningMode.MEMORIZE && (
                  <div className="text-xs font-medium text-emerald-500 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100 flex items-center gap-1">
@@ -400,13 +457,21 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
             {/* Action Buttons (Only visible when definition is shown) */}
             {!isQuestion && (
               <div className="absolute top-4 right-4 flex gap-2 z-10">
+                {/* Detailed Definition Button */}
+                <button
+                  onClick={() => setIsDefinitionOpen(true)}
+                  className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-full transition-colors"
+                  title="Detailed Definition"
+                >
+                  <Icon name="menu_book" className="text-2xl" />
+                </button>
                 {/* Dictionary Button - NEW */}
                 <button
                   onClick={() => setIsDictionaryOpen(true)}
                   className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"
-                  title="Dictionary"
+                  title="Search & Link Relations"
                 >
-                  <Icon name="menu_book" className="text-2xl" />
+                  <Icon name="search" className="text-2xl" />
                 </button>
                 {/* Add Note Button */}
                 <button 
@@ -519,6 +584,13 @@ export const LearningSession: React.FC<LearningSessionProps> = ({ list, allLists
         onAddWord={handleDictionaryAdd}
         currentLearningWord={currentWord?.english}
         onAddRelation={handleAddRelation}
+      />
+
+      {/* Definition Modal */}
+      <DefinitionModal
+        word={currentWord?.english || ''}
+        isOpen={isDefinitionOpen}
+        onClose={() => setIsDefinitionOpen(false)}
       />
 
       {/* Copy to List Modal */}

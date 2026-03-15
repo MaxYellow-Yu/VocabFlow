@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { Modal } from './Modal';
+import { DefinitionModal } from './DefinitionModal';
 import { searchDictionary, DictionaryResult } from '../services/dictionaryService';
 
 interface DictionaryModalProps {
@@ -25,6 +26,7 @@ export const DictionaryModal: React.FC<DictionaryModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const searchTimeoutRef = useRef<number | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [definitionWord, setDefinitionWord] = useState<string | null>(null);
 
   // Focus input on open
   const inputRef = useRef<HTMLInputElement>(null);
@@ -86,6 +88,7 @@ export const DictionaryModal: React.FC<DictionaryModalProps> = ({
   };
 
   return (
+    <>
     <Modal isOpen={isOpen} onClose={onClose} title="Dictionary Lookup" maxWidth="max-w-2xl">
       <div className="flex flex-col h-[60vh] relative">
         
@@ -153,6 +156,15 @@ export const DictionaryModal: React.FC<DictionaryModalProps> = ({
                  </div>
                  
                  <div className="flex gap-2 shrink-0">
+                    {/* Detailed Definition Button */}
+                    <button 
+                      onClick={() => setDefinitionWord(item.word)}
+                      className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
+                      title="Detailed Definition"
+                    >
+                      <Icon name="menu_book" className="text-lg" />
+                    </button>
+
                     {/* Link Relation Button - Only if context exists */}
                     {currentLearningWord && onAddRelation && (
                       <button 
@@ -183,5 +195,13 @@ export const DictionaryModal: React.FC<DictionaryModalProps> = ({
         </div>
       </div>
     </Modal>
+
+    {/* Definition Modal */}
+    <DefinitionModal
+      word={definitionWord || ''}
+      isOpen={!!definitionWord}
+      onClose={() => setDefinitionWord(null)}
+    />
+    </>
   );
 };

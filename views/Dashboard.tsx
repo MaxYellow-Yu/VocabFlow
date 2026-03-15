@@ -18,6 +18,8 @@ interface DashboardProps {
   onUpdateLists: (lists: WordList[]) => void;
 }
 
+import { DefinitionModal } from '../components/DefinitionModal';
+
 type TabType = 'new' | 'queue' | 'mastered';
 
 interface WordItemProps {
@@ -28,9 +30,10 @@ interface WordItemProps {
   onCopy: (word: Word, listId: string) => void;
   onEdit: (listId: string, word: Word) => void;
   onDelete: (listId: string, wordId: string) => void;
+  onDefinition: (word: string) => void;
 }
 
-const WordItem: React.FC<WordItemProps> = ({ word, listId, subtitle, onNote, onCopy, onEdit, onDelete }) => (
+const WordItem: React.FC<WordItemProps> = ({ word, listId, subtitle, onNote, onCopy, onEdit, onDelete, onDefinition }) => (
   <div className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center group hover:shadow-sm transition-shadow">
     <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-2 mb-1">
@@ -41,6 +44,9 @@ const WordItem: React.FC<WordItemProps> = ({ word, listId, subtitle, onNote, onC
         {subtitle}
     </div>
     <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <button onClick={() => onDefinition(word.english)} className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors" title="Detailed Definition">
+          <Icon name="menu_book" className="text-lg" />
+        </button>
         <button onClick={() => onNote(word)} className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors" title="Edit Note">
           <Icon name="edit_note" className="text-lg" />
         </button>
@@ -85,6 +91,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
 
   // Dictionary Modal State
   const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
+  const [definitionWord, setDefinitionWord] = useState<string | null>(null);
 
   // History Modal State
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -173,6 +180,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     // Necessary to allow dropping
     e.preventDefault();
+  };
+
+  const handleMoveList = (index: number, direction: number) => {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= lists.length) return;
+    
+    const newList = [...lists];
+    const temp = newList[index];
+    newList[index] = newList[newIndex];
+    newList[newIndex] = temp;
+    
+    onUpdateLists(newList);
   };
 
   // --- Helpers for Display ---
@@ -776,7 +795,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           const masteredCount = displayWords.filter(w => w.masteredDates.length > 0 && !list.consolidationQueueIds.includes(w.id)).length;
           
           // Ebbinghaus Due Count
-          const dueCount = displayWords.filter(w => isDueForReview(w)).length;
+          const dueCount = displayWords.filter(w => isDueForReview(w) && !list.consolidationQueueIds.includes(w.id)).length;
 
           const dailyCount = getDailyCount(list.id);
 
@@ -819,13 +838,32 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
               >
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex items-start gap-3">
-                    {/* Drag Handle */}
-                    <div 
-                      className="text-gray-300 cursor-move hover:text-gray-500 transition-colors mt-1" 
-                      title="Drag to reorder"
-                      onClick={(e) => e.stopPropagation()} // Prevent expansion when clicking drag handle
-                    >
-                      <Icon name="drag_indicator" />
+                    {/* Reorder Controls */}
+                    <div className="flex flex-col items-center justify-center -ml-2 mr-1" onClick={(e) => e.stopPropagation()}>
+                      {/* Mobile Up/Down */}
+                      <div className="flex sm:hidden flex-col">
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleMoveList(index, -1); }}
+                          disabled={index === 0}
+                          className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 p-1"
+                        >
+                          <Icon name="keyboard_arrow_up" className="text-xl" />
+                        </button>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleMoveList(index, 1); }}
+                          disabled={index === lists.length - 1}
+                          className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 p-1"
+                        >
+                          <Icon name="keyboard_arrow_down" className="text-xl" />
+                        </button>
+                      </div>
+                      {/* Desktop Drag Handle */}
+                      <div 
+                        className="hidden sm:block text-gray-300 cursor-move hover:text-gray-500 transition-colors mt-1" 
+                        title="Drag to reorder"
+                      >
+                        <Icon name="drag_indicator" />
+                      </div>
                     </div>
                     <div>
                       <h2 className="text-xl font-bold text-gray-800">
@@ -982,6 +1020,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                  onCopy={handleCopyInit} 
                                  onEdit={handleEditWordClick} 
                                  onDelete={handleDeleteWordClick}
+                                 onDefinition={setDefinitionWord}
                                />
                              ))
                           )}
@@ -1002,6 +1041,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                  key={word.id} 
                                  word={word} 
                                  listId={list.id}
+                                 onNote={handleNoteInit}
+                                 onCopy={handleCopyInit}
+                                 onEdit={handleEditWordClick}
+                                 onDelete={handleDeleteWordClick}
+                                 onDefinition={setDefinitionWord}
                                  subtitle={
                                    <div className="flex gap-2 mt-1">
                                       {word.incorrectCount > 0 && (
@@ -1011,10 +1055,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                       )}
                                    </div>
                                  }
-                                 onNote={handleNoteInit}
-                                 onCopy={handleCopyInit} 
-                                 onEdit={handleEditWordClick} 
-                                 onDelete={handleDeleteWordClick}
                                />
                              ))
                           )}
@@ -1052,6 +1092,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                    key={word.id} 
                                    word={word} 
                                    listId={list.id} 
+                                   onNote={handleNoteInit}
+                                   onCopy={handleCopyInit}
+                                   onEdit={handleEditWordClick}
+                                   onDelete={handleDeleteWordClick}
+                                   onDefinition={setDefinitionWord}
                                    subtitle={
                                      <div className="flex flex-wrap gap-2 mt-1">
                                         <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium border ${isDue ? 'bg-indigo-50 text-indigo-700 border-indigo-100' : 'bg-gray-50 text-gray-600 border-gray-200'}`}>
@@ -1065,10 +1110,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
                                         )}
                                      </div>
                                    }
-                                   onNote={handleNoteInit}
-                                   onCopy={handleCopyInit} 
-                                   onEdit={handleEditWordClick} 
-                                   onDelete={handleDeleteWordClick}
                                  />
                                );
                              })
@@ -1366,6 +1407,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ lists, onSelectSession, on
           </div>
         </div>
       </Modal>
+      {/* Definition Modal */}
+      <DefinitionModal
+        word={definitionWord || ''}
+        isOpen={!!definitionWord}
+        onClose={() => setDefinitionWord(null)}
+      />
+
     </div>
   );
 };
